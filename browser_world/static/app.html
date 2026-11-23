@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Book an appointment</title>
+  <!--
+    data-wam-key attributes give elements stable identities for matching
+    observations before and after an action when building training labels.
+    They are never model input: real websites do not have them.
+  -->
+  <style>
+    :root { font-family: system-ui, sans-serif; color: #1d2433; }
+    body { margin: 0; background: #f6f7fb; }
+    .topbar {
+      position: sticky; top: 0; z-index: 10;
+      background: #1d3557; color: #fff; padding: 12px 24px;
+    }
+    main { max-width: 560px; margin: 24px auto; padding: 0 16px; }
+    section { background: #fff; border-radius: 8px; padding: 16px 24px; }
+    label { display: block; margin-top: 14px; font-weight: 600; }
+    input[type=text], select, textarea {
+      display: block; width: 100%; box-sizing: border-box;
+      margin-top: 4px; padding: 8px; font: inherit;
+      border: 1px solid #9aa3b5; border-radius: 4px;
+    }
+    [aria-invalid=true] { border-color: #c1121f; }
+    .error { color: #c1121f; margin: 4px 0 0; }
+    fieldset { border: 0; padding: 0; margin: 14px 0 0; }
+    legend { font-weight: 600; }
+    .slots { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+    .slots label { margin: 0; font-weight: 400; }
+    .check label { display: inline; font-weight: 400; }
+    .actions { display: flex; gap: 8px; margin-top: 20px; }
+    button { font: inherit; padding: 8px 16px; }
+  </style>
+</head>
+<body>
+  <header class="topbar">Riverside Clinic</header>
+  <main>
+    <h1>Book an appointment</h1>
+    <p role="status" id="step-indicator" data-wam-key="step-indicator">
+      Step 1 of 3
+    </p>
+
+    <section id="step-appointment" data-wam-key="step-appointment">
+      <form id="form-appointment" novalidate>
+        <h2 tabindex="-1">Choose your appointment</h2>
+
+        <label for="service">Service</label>
+        <select id="service" data-wam-key="service" aria-required="true"
+                aria-describedby="service-error">
+          <option value="">Select a service</option>
+        </select>
+        <p class="error" id="service-error" role="alert"
+           data-wam-key="error-service" hidden></p>
+
+        <label for="doctor">Doctor</label>
+        <select id="doctor" data-wam-key="doctor" aria-required="true"
+                disabled
+                aria-describedby="doctor-error">
+          <option value="">Select a doctor</option>
+        </select>
+        <p class="error" id="doctor-error" role="alert"
+           data-wam-key="error-doctor" hidden></p>
+
+        <label for="date">Date</label>
+        <select id="date" data-wam-key="date" aria-required="true"
+                disabled
+                aria-describedby="date-error">
+          <option value="">Select a date</option>
+        </select>
+        <p class="error" id="date-error" role="alert"
+           data-wam-key="error-date" hidden></p>
+
+        <fieldset id="slot-group" data-wam-key="slot-group"
+                  aria-describedby="slot-error">
+          <legend>Time</legend>
+          <p role="status" id="slot-status" data-wam-key="slot-status">
+            Choose a date to see times.
+          </p>
+          <div class="slots" id="slot-list"></div>
+        </fieldset>
+        <p class="error" id="slot-error" role="alert"
+           data-wam-key="error-slot" hidden></p>
+
+        <div class="actions">
+          <button type="submit" data-wam-key="next-appointment">Next</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="step-details" data-wam-key="step-details" hidden>
+      <form id="form-details" novalidate>
+        <h2 tabindex="-1">Your details</h2>
+
+        <label for="name">Full name</label>
+        <input type="text" id="name" data-wam-key="name"
+               aria-required="true"
+               autocomplete="off" aria-describedby="name-error">
+        <p class="error" id="name-error" role="alert"
+           data-wam-key="error-name" hidden></p>
+
+        <label for="email">Email address</label>
+        <input type="text" id="email" data-wam-key="email"
+               aria-required="true"
+               inputmode="email" autocomplete="off"
+               aria-describedby="email-error">
+        <p class="error" id="email-error" role="alert"
+           data-wam-key="error-email" hidden></p>
+
+        <label for="phone">Phone number</label>
+        <input type="text" id="phone" data-wam-key="phone"
+               aria-required="true"
+               inputmode="tel" autocomplete="off"
+               aria-describedby="phone-error">
+        <p class="error" id="phone-error" role="alert"
+           data-wam-key="error-phone" hidden></p>
+
+        <label for="notes">Notes for the doctor (optional)</label>
+        <textarea id="notes" data-wam-key="notes" rows="2"></textarea>
+
+        <div class="check">
+          <input type="checkbox" id="consent" data-wam-key="consent"
+                 aria-required="true"
+                 aria-describedby="consent-error">
+          <label for="consent">I accept the privacy notice</label>
+        </div>
+        <p class="error" id="consent-error" role="alert"
+           data-wam-key="error-consent" hidden></p>
+
+        <div class="actions">
+          <button type="button" id="back-details"
+                  data-wam-key="back-details">Back</button>
+          <button type="submit" data-wam-key="next-details">Next</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="step-review" data-wam-key="step-review" hidden>
+      <h2 tabindex="-1">Review and confirm</h2>
+      <ul id="review-list" data-wam-key="review-list"></ul>
+      <p class="error" id="confirm-error" role="alert"
+         data-wam-key="error-confirm" hidden></p>
+      <div class="actions">
+        <button type="button" id="back-review"
+                data-wam-key="back-review">Back</button>
+        <button type="button" id="choose-another" data-wam-key="choose-another"
+                hidden>Choose another time</button>
+        <button type="button" id="confirm"
+                data-wam-key="confirm">Confirm booking</button>
+      </div>
+    </section>
+
+    <section id="step-done" data-wam-key="step-done" hidden>
+      <h2 tabindex="-1">Appointment confirmed</h2>
+      <p id="reference" data-wam-key="reference"></p>
+      <div class="actions">
+        <button type="button" id="book-another"
+                data-wam-key="book-another">Book another appointment</button>
+      </div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

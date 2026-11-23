@@ -1,0 +1,8 @@
+# Approximates the Google Python Style Guide's pylintrc.
+[FORMAT]
+max-line-length=80
+indent-string='    '
+
+[MESSAGES CONTROL]
+# Google's config does not enforce these design-size heuristics.
+disable=too-many-instance-attributes,too-few-public-methods,too-many-arguments,too-many-positional-arguments,too-many-locals,missing-module-docstring
