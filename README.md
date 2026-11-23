@@ -10,13 +10,16 @@ Browser world model v0 (BW0). The locked plan is in `docs/BW0-spec.md`.
 | `server.py` | Starlette server: the booking page plus a JSON API. `/api/truth/*` is backend ground truth that the page never calls |
 | `static/app.html`, `static/app.js` | Three-step booking wizard (appointment → details → review → confirmation) |
 | `observer.py` | Four-plane Chromium observer (semantic, geometry, motion, temporal) over CDP. No screenshots, no HTML |
+| `delta.py` | What changed between two observations (the world model's prediction target) |
 | `inspect_page.py` | Prints what the observer sees |
+| `live_demo.py`, `static/viewer.html` | Live viewer: use the site in a real Chromium window and watch the observation update |
 
 ```bash
 pip install -r requirements.txt
 python -m browser_world.server --port 7800   # open http://127.0.0.1:7800/?session=demo
-python -m browser_world.inspect_page         # observe the booking page
-python -m pytest                             # 48 tests: rules, API, browser E0.1 acceptance, observer
+python -m browser_world.live_demo            # Chromium window + live viewer at http://127.0.0.1:7801
+python -m browser_world.inspect_page         # observe the booking page once
+python -m pytest                             # 52 tests: rules, API, browser E0.1 acceptance, observer, delta
 pylint browser_world tests                   # Google-style lint config in .pylintrc
 ```
 
