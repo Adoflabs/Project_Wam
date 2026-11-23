@@ -66,8 +66,11 @@ def test_occlusion_is_detected(world):
       document.body.append(overlay);
     }""")
     after = world.watcher.observe()
-    assert after.find('next-appointment').hit_testable is False
-    assert after.find('next-appointment').states['disabled'] is False
+    covered = after.find('next-appointment')
+    assert covered.hit_testable is False
+    assert covered.obstructed
+    assert covered.visible  # Covered is not the same as invisible.
+    assert covered.states['disabled'] is False
 
 
 def test_motion_plane_pinned_header_and_scroll(make_world):
@@ -136,3 +139,47 @@ def test_plane_filtering_and_json(world):
     text = observation.to_text()
     assert 'combobox "Service"' in text
     assert text.splitlines()[-1].startswith('TEMPORAL')
+
+
+def test_versions_track_dom_changes_navigation_and_scroll(make_world):
+    world = make_world(viewport_height=300)
+    first = world.watcher.observe()
+    second = world.watcher.observe()
+    assert second.sequence == first.sequence + 1
+    assert world.watcher.is_current(second)
+
+    world.page.select_option('#service', 'checkup')
+    world.watcher.wait_until_settled()
+    assert not world.watcher.is_current(second)
+    changed = world.watcher.observe()
+    assert changed.dom_version > second.dom_version
+    assert world.watcher.is_current(changed)
+
+    world.page.mouse.wheel(0, 100)
+    world.watcher.wait_until_settled()
+    assert not world.watcher.is_current(changed)
+
+    world.page.reload()
+    world.page.wait_for_selector('body[data-ready=true]')
+    world.watcher.wait_until_settled()
+    assert world.watcher.observe().page_epoch == changed.page_epoch + 1
+
+
+def test_live_target_checks(world):
+    observation = world.watcher.observe()
+    service = observation.find('service')
+    doctor = observation.find('doctor')
+    x, y = service.box.center
+    assert world.watcher.hits_node(x, y, service.node_id) is True
+    assert world.watcher.hits_node(x, y, doctor.node_id) is False
+    assert world.watcher.hits_node(x, y, 999_999) is None
+    assert world.watcher.is_enabled(service.node_id) is True
+    assert world.watcher.is_enabled(doctor.node_id) is False
+    assert world.watcher.is_enabled(999_999) is None
+
+
+def test_hidden_and_options_are_not_visible(world):
+    observation = world.watcher.observe()
+    assert observation.find('service').visible
+    option = next(e for e in observation.elements if e.role == 'option')
+    assert not option.visible  # No layout box in a closed dropdown.

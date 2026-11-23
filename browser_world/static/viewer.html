@@ -596,7 +596,8 @@ function elementLine(e, planes) {
     const b = e.box;
     parts.push(`@${Math.round(b.x)},${Math.round(b.y)} ${Math.round(b.width)}x${Math.round(b.height)}`);
     if (!e.in_viewport) parts.push('offscreen');
-    if (e.hit_testable === false) parts.push('occluded');
+    if (e.visible === false) parts.push('invisible');
+    if (e.obstructed) parts.push('obstructed');
   }
   if (planes.has('motion') && e.pinned) parts.push('pinned');
   return parts.join(' ');

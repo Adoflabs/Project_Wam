@@ -70,32 +70,39 @@ _MATCH_KEY_ATTRIBUTE = 'data-wam-key'
 _MAX_TEXT_LENGTH = 120
 _WHITESPACE_RE = re.compile(r'\s+')
 _PINNED_POSITIONS = frozenset({'fixed', 'sticky'})
-_SNAPSHOT_STYLES = ('position',)
+# Order matters: _DomSnapshot reads the styles by position.
+_SNAPSHOT_STYLES = ('position', 'visibility', 'opacity')
+_HIDDEN_VISIBILITY = frozenset({'hidden', 'collapse'})
+_OBJECT_GROUP = 'wam-observer'
 
 # Counts DOM mutations in the page. It touches only a private window
 # property, never the DOM, so it cannot change what the page shows.
+# `mutations` is reset by each observation; `total` only ever grows and is
+# the document's version number.
 _TEMPORAL_INIT_SCRIPT = """
 (() => {
-  const state = {mutations: 0, last: performance.now()};
+  const state = {mutations: 0, total: 0, last: performance.now()};
   new MutationObserver((records) => {
     state.mutations += records.length;
+    state.total += records.length;
     state.last = performance.now();
   }).observe(document, {subtree: true, childList: true, attributes: true,
                         characterData: true});
   Object.defineProperty(window, '__wamTemporal', {value: {
     take() {
-      const out = {mutations: state.mutations,
+      const out = {mutations: state.mutations, total: state.total,
                    msSinceMutation: performance.now() - state.last};
       state.mutations = 0;
       return out;
     },
     peek() {
-      return {mutations: state.mutations,
+      return {mutations: state.mutations, total: state.total,
               msSinceMutation: performance.now() - state.last};
     },
   }});
 })();
 """
+_NO_TEMPORAL = '{mutations: 0, total: 0, msSinceMutation: 0}'
 
 
 @dataclasses.dataclass(frozen=True)
@@ -131,9 +138,17 @@ class Element:
         input, because real websites do not have it.
       box: Layout box, or None for elements without layout (such as the
         options of a closed dropdown).
+      visible: Whether the element is rendered with a non-empty box and is
+        not hidden by `visibility` or zero opacity (its own or an
+        ancestor's). Says nothing about being covered or scrolled away.
       in_viewport: Whether the box intersects the visible viewport.
-      hit_testable: For interactive elements in the viewport, whether a
-        click at the box centre reaches this element; otherwise None.
+      hit_point: For interactive elements in the viewport, the document
+        point that was hit-tested: the centre of the box's visible part.
+        Actions should press here. Otherwise None.
+      hit_testable: Whether a click at `hit_point` reaches this element, or
+        None when no hit test ran.
+      obstructed: Whether the hit test ran and reached a different element
+        (an overlay, or a scroll container clipping this element).
       clickable: Whether Chromium reports a click listener or native click
         behaviour for the element.
       pinned: Whether the element or an ancestor is fixed or sticky, so it
@@ -149,8 +164,11 @@ class Element:
     parent_id: int | None
     match_key: str | None
     box: Box | None
+    visible: bool
     in_viewport: bool
+    hit_point: tuple[float, float] | None
     hit_testable: bool | None
+    obstructed: bool
     clickable: bool
     pinned: bool
     paint_order: int | None
@@ -171,8 +189,11 @@ class Element:
         if GEOMETRY in planes:
             out.update(
                 box=dataclasses.asdict(self.box) if self.box else None,
+                visible=self.visible,
                 in_viewport=self.in_viewport,
-                hit_testable=self.hit_testable)
+                hit_point=(list(self.hit_point) if self.hit_point else None),
+                hit_testable=self.hit_testable,
+                obstructed=self.obstructed)
         if MOTION in planes:
             out.update(pinned=self.pinned, paint_order=self.paint_order)
         return out
@@ -233,6 +254,10 @@ class Observation:
     """Everything the observer saw at one moment.
 
     Attributes:
+      sequence: This observer's observation counter, starting at 1.
+      page_epoch: Main-frame navigations seen before this observation.
+      dom_version: DOM mutations in the current document so far. Together
+        with `page_epoch` it identifies the page version observed.
       url: The page URL.
       title: The document title.
       elements: Observed elements in document order.
@@ -240,6 +265,9 @@ class Observation:
       temporal: Page-level temporal plane.
     """
 
+    sequence: int
+    page_epoch: int
+    dom_version: int
     url: str
     title: str
     elements: tuple[Element, ...]
@@ -258,6 +286,9 @@ class Observation:
         """Returns a JSON-ready dict containing only the given planes."""
         planes = frozenset(planes)
         out: dict[str, Any] = {
+            'sequence': self.sequence,
+            'page_epoch': self.page_epoch,
+            'dom_version': self.dom_version,
             'url': self.url,
             'title': self.title,
             'elements': [e.to_dict(planes) for e in self.elements],
@@ -304,10 +335,12 @@ def _element_line(element: Element, planes: frozenset[str]) -> str:
     if GEOMETRY in planes and element.box is not None:
         b = element.box
         parts.append(f'@{b.x:.0f},{b.y:.0f} {b.width:.0f}x{b.height:.0f}')
+        if not element.visible:
+            parts.append('invisible')
         if not element.in_viewport:
             parts.append('offscreen')
-        if element.hit_testable is False:
-            parts.append('occluded')
+        if element.obstructed:
+            parts.append('obstructed')
     if MOTION in planes and element.pinned:
         parts.append('pinned')
     return ' '.join(parts)
@@ -367,6 +400,8 @@ class _DomSnapshot:
         self._box: dict[int, Box] = {}
         self._paint_order: dict[int, int] = {}
         self._own_pinned: set[int] = set()
+        self._hidden: set[int] = set()
+        self._transparent: set[int] = set()
         paint_orders = layout.get('paintOrders', [])
         for i, node_index in enumerate(layout['nodeIndex']):
             x, y, width, height = layout['bounds'][i]
@@ -374,8 +409,15 @@ class _DomSnapshot:
             if i < len(paint_orders):
                 self._paint_order[node_index] = paint_orders[i]
             styles = layout['styles'][i]
-            if styles and strings[styles[0]] in _PINNED_POSITIONS:
+            if not styles:
+                continue  # Text runs carry no computed styles of their own.
+            position, visibility, opacity = (strings[s] for s in styles)
+            if position in _PINNED_POSITIONS:
                 self._own_pinned.add(node_index)
+            if visibility in _HIDDEN_VISIBILITY:
+                self._hidden.add(node_index)
+            if opacity == '0':
+                self._transparent.add(node_index)
 
     def index(self, backend_id: int) -> int | None:
         """Returns the snapshot index of a backend node, or None."""
@@ -400,6 +442,23 @@ class _DomSnapshot:
     def required(self, index: int) -> bool:
         """Returns whether the node's attributes mark it required."""
         return index in self._required
+
+    def visible(self, index: int) -> bool:
+        """Returns whether the node is rendered and not see-through.
+
+        `visibility` is inherited, so the node's own value suffices;
+        opacity is not, so a fully transparent ancestor also hides it.
+        """
+        box = self._box.get(index)
+        if box is None or box.width <= 0 or box.height <= 0:
+            return False
+        if index in self._hidden:
+            return False
+        while index != -1:
+            if index in self._transparent:
+                return False
+            index = self._parent[index]
+        return True
 
     def pinned(self, index: int) -> bool:
         """Returns whether the node or an ancestor is fixed or sticky."""
@@ -444,6 +503,8 @@ class Observer:
         self._pending_requests: set[str] = set()
         self._requests_started = 0
         self._navigations = 0
+        self._page_epoch = 0
+        self._sequence = 0
         self._settled: bool | None = None
         self._cdp = page.context.new_cdp_session(page)
         self._cdp.on('Network.requestWillBeSent', self._on_request)
@@ -465,6 +526,7 @@ class Observer:
     def _on_navigated(self, event: Mapping[str, Any]) -> None:
         if not event['frame'].get('parentId'):
             self._navigations += 1
+            self._page_epoch += 1
             self._pending_requests.clear()
 
     def wait_until_settled(self, quiet_ms: float = 100,
@@ -509,6 +571,8 @@ class Observer:
         elements = self._elements(ax_nodes, snapshot, viewport)
         if self._cull_offscreen:
             elements = [e for e in elements if e.in_viewport or e.box is None]
+        temporal, dom_version = self._take_temporal()
+        self._sequence += 1
         motion = Motion(
             viewport_width=viewport.width,
             viewport_height=viewport.height,
@@ -520,17 +584,102 @@ class Observer:
             stacking_contexts=snapshot.stacking_contexts,
         )
         return Observation(
+            sequence=self._sequence,
+            page_epoch=self._page_epoch,
+            dom_version=dom_version,
             url=self._page.url,
             title=self._page.title(),
             elements=tuple(elements),
             motion=motion,
-            temporal=self._take_temporal(),
+            temporal=temporal,
         )
 
-    def _take_temporal(self) -> Temporal:
+    def current_version(self) -> tuple[int, int]:
+        """Returns the live (page_epoch, dom_version) of the page.
+
+        Compare with an observation's fields to tell whether the DOM or the
+        document changed since it was taken. Typing into a field changes
+        its value without a DOM mutation, so this cannot detect that.
+        """
+        # Evaluating first lets Playwright deliver pending navigation events.
+        counts = self._page.evaluate(
+            f'window.__wamTemporal ? window.__wamTemporal.peek() : '
+            f'{_NO_TEMPORAL}')
+        return self._page_epoch, int(counts['total'])
+
+    def is_current(self, observation: Observation) -> bool:
+        """Returns whether the page still matches `observation`: same
+        document, no DOM mutation since, and the same scroll position."""
+        version = (observation.page_epoch, observation.dom_version)
+        if self.current_version() != version:
+            return False
+        metrics = self._cdp.send('Page.getLayoutMetrics')['cssVisualViewport']
+        return (float(metrics['pageX']) == observation.motion.scroll_x
+                and float(metrics['pageY']) == observation.motion.scroll_y)
+
+    def hits_node(self, x: float, y: float, node_id: int) -> bool | None:
+        """Returns whether a click at document point (x, y) reaches a node.
+
+        A hit on any descendant counts, as a click on a button's text
+        activates the button.
+
+        Args:
+          x: Document x coordinate, inside the visible viewport.
+          y: Document y coordinate, inside the visible viewport.
+          node_id: Backend node id of the intended target.
+
+        Returns:
+          True or False, or None if the target node no longer exists.
+        """
+        try:
+            target = self._cdp.send('DOM.resolveNode', {
+                'backendNodeId': node_id, 'objectGroup': _OBJECT_GROUP,
+            })['object']['objectId']
+        except sync_api.Error:
+            return None
+        try:
+            hit_id = self._cdp.send('DOM.getNodeForLocation', {
+                'x': round(x), 'y': round(y),
+                'includeUserAgentShadowDOM': False,
+            })['backendNodeId']
+            if hit_id == node_id:
+                return True
+            hit = self._cdp.send('DOM.resolveNode', {
+                'backendNodeId': hit_id, 'objectGroup': _OBJECT_GROUP,
+            })['object']['objectId']
+            return bool(self._cdp.send('Runtime.callFunctionOn', {
+                'objectId': target,
+                'functionDeclaration':
+                    'function(n) { return this.contains(n); }',
+                'arguments': [{'objectId': hit}],
+                'returnByValue': True,
+            })['result']['value'])
+        except sync_api.Error:
+            return False  # Nothing hittable at that point.
+        finally:
+            self._cdp.send('Runtime.releaseObjectGroup',
+                           {'objectGroup': _OBJECT_GROUP})
+
+    def is_enabled(self, node_id: int) -> bool | None:
+        """Returns whether a node is enabled right now, from the live
+        accessibility tree, or None if the node no longer exists."""
+        try:
+            nodes = self._cdp.send('Accessibility.getPartialAXTree', {
+                'backendNodeId': node_id, 'fetchRelatives': False,
+            })['nodes']
+        except sync_api.Error:
+            return None
+        for prop in nodes[0].get('properties', []) if nodes else []:
+            if prop['name'] == 'disabled':
+                return not _as_bool(prop.get('value', {}).get('value'))
+        return True
+
+    def _take_temporal(self) -> tuple[Temporal, int]:
+        """Returns the temporal plane and the DOM version, and resets the
+        per-observation counters."""
         page_counts = self._page.evaluate(
-            'window.__wamTemporal ? window.__wamTemporal.take() : '
-            '{mutations: 0, msSinceMutation: 0}')
+            f'window.__wamTemporal ? window.__wamTemporal.take() : '
+            f'{_NO_TEMPORAL}')
         temporal = Temporal(
             timestamp_ms=time.time() * 1000,
             mutations=int(page_counts['mutations']),
@@ -543,7 +692,7 @@ class Observer:
         self._navigations = 0
         self._requests_started = 0
         self._settled = None
-        return temporal
+        return temporal, int(page_counts['total'])
 
     def _kept_roles(self) -> frozenset[str]:
         roles = INTERACTIVE_ROLES | STRUCTURAL_ROLES
@@ -603,10 +752,12 @@ class Observer:
             states['required'] = True
         box = snapshot.box(index) if index is not None else None
         in_viewport = box is not None and _intersects(box, viewport)
+        visible = index is not None and snapshot.visible(index)
+        hit_point = None
         hit_testable = None
         if box is not None and in_viewport and role in INTERACTIVE_ROLES:
-            hit_testable = self._hit_test(box, viewport, backend_id,
-                                          snapshot)
+            hit_point = _visible_center(box, viewport)
+            hit_testable = self._hit_test(hit_point, backend_id, snapshot)
         value = _ax_value(node, 'value')
         return Element(
             node_id=backend_id,
@@ -617,31 +768,26 @@ class Observer:
             parent_id=parent_backend,
             match_key=snapshot.match_key(index) if index is not None else None,
             box=box,
+            visible=visible,
             in_viewport=in_viewport,
+            hit_point=hit_point,
             hit_testable=hit_testable,
+            obstructed=hit_testable is False,
             clickable=index is not None and snapshot.clickable(index),
             pinned=index is not None and snapshot.pinned(index),
             paint_order=(snapshot.paint_order(index)
                          if index is not None else None),
         )
 
-    def _hit_test(self, box: Box, viewport: Box, backend_id: int,
+    def _hit_test(self, point: tuple[float, float], backend_id: int,
                   snapshot: _DomSnapshot) -> bool:
-        """Returns whether a click at the box centre reaches the element.
-
-        Clicks on an element's own label also count, since browsers forward
-        them to the labelled control.
-        """
-        center_x, center_y = box.center
-        center_x = min(max(center_x, viewport.x),
-                       viewport.x + viewport.width - 1)
-        center_y = min(max(center_y, viewport.y),
-                       viewport.y + viewport.height - 1)
+        """Returns whether a click at document `point` reaches the element
+        or one of its descendants."""
         # getNodeForLocation takes document coordinates, but only finds
-        # nodes inside the visible viewport, hence the clamping above.
+        # nodes inside the visible viewport.
         hit = self._cdp.send('DOM.getNodeForLocation', {
-            'x': round(center_x),
-            'y': round(center_y),
+            'x': round(point[0]),
+            'y': round(point[1]),
             'includeUserAgentShadowDOM': False,
         })
         return snapshot.is_self_or_descendant(hit['backendNodeId'],
@@ -673,6 +819,16 @@ def _declares_required(attributes: Sequence[int],
         if name == 'required' or (name == 'aria-required' and value == 'true'):
             return True
     return False
+
+
+def _visible_center(box: Box, viewport: Box) -> tuple[float, float]:
+    """Returns the centre of the part of `box` inside `viewport`, in
+    document coordinates. Assumes they intersect."""
+    left = max(box.x, viewport.x)
+    right = min(box.x + box.width, viewport.x + viewport.width)
+    top = max(box.y, viewport.y)
+    bottom = min(box.y + box.height, viewport.y + viewport.height)
+    return ((left + right) / 2, (top + bottom) / 2)
 
 
 def _intersects(box: Box, viewport: Box) -> bool:

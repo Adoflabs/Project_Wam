@@ -119,17 +119,32 @@ class World:
 
 
 @pytest.fixture
-def make_world(
-        browser: sync_api.Browser,
-        base_url: str) -> Iterator[Callable[..., World]]:
-    """Returns a factory for isolated worlds, each in its own context."""
+def new_page(
+        browser: sync_api.Browser) -> Iterator[Callable[..., sync_api.Page]]:
+    """Returns a factory for pages, each in its own browser context.
+
+    Contexts are closed when the test ends.
+    """
     contexts = []
 
-    def factory(viewport_height: int = 800) -> World:
+    def factory(viewport_height: int = 800) -> sync_api.Page:
         context = browser.new_context(
             viewport={'width': 1280, 'height': viewport_height})
         contexts.append(context)
-        page = context.new_page()
+        return context.new_page()
+
+    yield factory
+    for context in contexts:
+        context.close()
+
+
+@pytest.fixture
+def make_world(new_page: Callable[..., sync_api.Page],
+               base_url: str) -> Callable[..., World]:
+    """Returns a factory for isolated booking worlds."""
+
+    def factory(viewport_height: int = 800) -> World:
+        page = new_page(viewport_height)
         watcher = observer.attach(page)
         session_id = uuid.uuid4().hex
         page.goto(f'{base_url}/?session={session_id}')
@@ -138,9 +153,7 @@ def make_world(
         watcher.observe()  # Clears the page-load temporal counts.
         return World(page, watcher, session_id, base_url)
 
-    yield factory
-    for context in contexts:
-        context.close()
+    return factory
 
 
 @pytest.fixture
