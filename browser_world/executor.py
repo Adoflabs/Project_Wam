@@ -1,4 +1,4 @@
-"""Performs a decided action on an observed element with real input events.
+"""Performs a decided action on the page with real input events.
 
 The executor never decides what to do. A decider (a test, a data collector,
 later the world model) picks an action from `available_actions(observation)`
@@ -7,6 +7,14 @@ perform against the current page, moves the mouse along a path to the
 target, re-checks the target, and then clicks or types with Playwright's
 mouse and keyboard. It never uses CSS selectors, page-specific knowledge or
 backend state.
+
+Action kinds:
+  * click: a button.
+  * type: replace a text field's contents.
+  * select: an option of a native dropdown; the target is the option
+    element, and the executor opens the dropdown and picks it by keyboard.
+  * check: set a checkbox or radio button to an explicit state.
+  * scroll: scroll the page with the mouse wheel; no element target.
 
 Safety contract for data collection (E0.3a):
   * Each observation may be used for one executed action. After acting, the
@@ -28,6 +36,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import math
 import time
 from typing import Any
 
@@ -37,10 +46,22 @@ from browser_world import observer
 
 CLICK = 'click'
 TYPE = 'type'
+SELECT = 'select'
+CHECK = 'check'
+SCROLL = 'scroll'
+# Roles each element-targeted action accepts. SELECT targets an option,
+# whose dropdown is the control actually pressed.
 _ROLES_FOR_ACTION = {
     CLICK: frozenset({'button'}),
     TYPE: frozenset({'searchbox', 'textbox'}),
+    SELECT: frozenset({'option'}),
+    CHECK: frozenset({'checkbox', 'radio'}),
 }
+ACTION_KINDS = frozenset(_ROLES_FOR_ACTION) | {SCROLL}
+_DROPDOWN_ROLE = 'combobox'
+# Default distance offered by scroll affordances, as a share of the
+# viewport height.
+_SCROLL_FRACTION = 0.8
 
 
 class Refusal(enum.StrEnum):
@@ -55,6 +76,7 @@ class Refusal(enum.StrEnum):
     NOT_IN_VIEWPORT = 'not_in_viewport'
     OBSTRUCTED = 'obstructed'
     STALE_OBSERVATION = 'stale_observation'
+    ALREADY_IN_STATE = 'already_in_state'
 
 
 @dataclasses.dataclass(frozen=True)
@@ -66,16 +88,25 @@ class Affordance:
     to learn.
 
     Attributes:
-      kind: `CLICK` or `TYPE`.
-      target: The element's `node_id` in the observation.
-      role: The element's role, for the decider's convenience.
-      name: The element's accessible name, for the decider's convenience.
+      kind: One of `ACTION_KINDS`.
+      target: The element's `node_id` in the observation; None for SCROLL.
+      role: The element's role ('page' for SCROLL), for the decider.
+      name: The element's accessible name, for the decider.
+      checked: For CHECK, the state the action would set.
+      scroll_y: For SCROLL, a suggested distance in CSS pixels.
     """
 
     kind: str
-    target: int
+    target: int | None
     role: str
     name: str
+    checked: bool | None = None
+    scroll_y: float | None = None
+
+    def action(self, text: str | None = None) -> 'Action':
+        """Returns this affordance as an action; TYPE needs `text`."""
+        return Action(self.kind, self.target, text=text, checked=self.checked,
+                      scroll_y=self.scroll_y)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -83,14 +114,20 @@ class Action:
     """A decided action.
 
     Attributes:
-      kind: `CLICK` or `TYPE`.
-      target: `node_id` of the target element in the observation acted on.
-      text: Text that replaces the field's contents; required for `TYPE`.
+      kind: One of `ACTION_KINDS`.
+      target: `node_id` of the target element in the observation acted on
+        (for SELECT, the option to pick); must be None for SCROLL.
+      text: Text that replaces the field's contents; required for TYPE.
+      checked: The state to set; required for CHECK.
+      scroll_y: Pixels to scroll the page, positive is down; required for
+        SCROLL.
     """
 
     kind: str
-    target: int
+    target: int | None = None
     text: str | None = None
+    checked: bool | None = None
+    scroll_y: float | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -160,11 +197,13 @@ class ActionResult:
         return dataclasses.asdict(self)
 
 
-def _element_problem(element: observer.Element,
-                     kind: str) -> tuple[Refusal, str] | None:
-    """Returns why `kind` cannot be done to `element`, judged from the
-    observation alone, or None if it can."""
-    if element.role not in _ROLES_FOR_ACTION[kind]:
+def _element_problem(element: observer.Element, kind: str,
+                     role_checked: bool = False
+                     ) -> tuple[Refusal, str] | None:
+    """Returns why `kind` cannot be done to the pressed `element`, judged
+    from the observation alone, or None if it can. `role_checked` skips
+    the role test for controls reached through another element."""
+    if not role_checked and element.role not in _ROLES_FOR_ACTION[kind]:
         return Refusal.UNSUPPORTED_ROLE, f'Cannot {kind} a {element.role}.'
     if element.states.get('disabled'):
         return Refusal.DISABLED, 'The target is disabled.'
@@ -177,25 +216,90 @@ def _element_problem(element: observer.Element,
     return None
 
 
+def _dropdown_of(observation: observer.Observation,
+                 option: observer.Element) -> observer.Element | None:
+    """Returns the native dropdown an option belongs to, or None. Options
+    inside an <optgroup> have the group as their parent, so the search
+    walks up the parent chain."""
+    by_id = {e.node_id: e for e in observation.elements}
+    parent = by_id.get(option.parent_id) if option.parent_id else None
+    while parent is not None:
+        if parent.role == _DROPDOWN_ROLE:
+            return parent
+        parent = by_id.get(parent.parent_id) if parent.parent_id else None
+    return None
+
+
+def _options_of(observation: observer.Observation,
+                dropdown: observer.Element) -> list[observer.Element]:
+    """Returns a dropdown's options in document order."""
+    return [e for e in observation.elements
+            if e.role == 'option' and _dropdown_of(observation, e) is dropdown]
+
+
+def _control_problem(observation: observer.Observation,
+                     element: observer.Element,
+                     kind: str) -> tuple[Refusal, str] | None:
+    """Returns why `kind` cannot be done to `element`, judged from the
+    observation alone, or None if it can. For SELECT the option's
+    dropdown is the control that must be usable."""
+    if element.role not in _ROLES_FOR_ACTION[kind]:
+        return Refusal.UNSUPPORTED_ROLE, f'Cannot {kind} a {element.role}.'
+    if kind != SELECT:
+        return _element_problem(element, kind)
+    dropdown = _dropdown_of(observation, element)
+    if dropdown is None:
+        return (Refusal.UNSUPPORTED_ROLE,
+                'The option is not inside a native dropdown.')
+    if element.states.get('disabled'):
+        return Refusal.DISABLED, 'The option is disabled.'
+    return _element_problem(dropdown, CLICK, role_checked=True)
+
+
+def _scroll_affordances(
+        observation: observer.Observation) -> list[Affordance]:
+    """Offers scrolling the page down and up when there is room."""
+    motion = observation.motion
+    step = round(motion.viewport_height * _SCROLL_FRACTION)
+    affordances = []
+    if motion.scroll_y + motion.viewport_height < motion.content_height:
+        affordances.append(Affordance(SCROLL, None, 'page', 'scroll down',
+                                      scroll_y=float(step)))
+    if motion.scroll_y > 0:
+        affordances.append(Affordance(SCROLL, None, 'page', 'scroll up',
+                                      scroll_y=float(-step)))
+    return affordances
+
+
 def available_actions(
         observation: observer.Observation) -> list[Affordance]:
-    """Lists the actions that can be performed on observed elements now.
+    """Lists the actions that can be performed now.
 
     Args:
       observation: The observation to act on.
 
     Returns:
-      One affordance per element and supported action kind, in document
-      order. Typing affordances carry no text; the decider supplies it.
+      Affordances for observed elements in document order, then page
+      scrolling. Typing affordances carry no text; the decider supplies it.
+      CHECK affordances set the opposite of the current state (radio
+      buttons can only be set).
     """
     affordances = []
     for element in observation.elements:
         for kind, roles in _ROLES_FOR_ACTION.items():
-            if (element.role in roles
-                    and _element_problem(element, kind) is None):
-                affordances.append(Affordance(kind, element.node_id,
-                                              element.role, element.name))
-    return affordances
+            if element.role not in roles:
+                continue
+            if _control_problem(observation, element, kind) is not None:
+                continue
+            checked = None
+            if kind == CHECK:
+                checked = not element.states.get('checked')
+                if element.role == 'radio' and not checked:
+                    continue
+            affordances.append(Affordance(kind, element.node_id,
+                                          element.role, element.name,
+                                          checked=checked))
+    return affordances + _scroll_affordances(observation)
 
 
 class Executor:
@@ -226,8 +330,8 @@ class Executor:
         """Performs `action`, or refuses with a reason.
 
         Args:
-          observation: The latest observation of the page; `action.target`
-            must refer to one of its elements.
+          observation: The latest observation of the page; an element
+            target must refer to one of its elements.
           action: What the decider chose.
 
         Returns:
@@ -236,13 +340,15 @@ class Executor:
         finish = _ResultBuilder(action, observation.sequence,
                                 time.perf_counter(), time.time() * 1000)
         try:
-            element = self._check_before(observation, action)
+            plan = self._plan(observation, action)
         except _RefusedError as e:
             return finish.refused(e.refusal, e.detail)
         self._used_observations.add(observation.sequence)
+        if plan.control is None:
+            return self._scroll(action.scroll_y or 0.0, finish)
 
         try:
-            doc_x, doc_y = _press_point(element)
+            doc_x, doc_y = _press_point(plan.control)
         except _RefusedError as e:
             return finish.refused(e.refusal, e.detail)
         path = self._move_to(doc_x - observation.motion.scroll_x,
@@ -250,7 +356,7 @@ class Executor:
                              finish.started)
         changed = not self._watcher.is_current(observation)
         try:
-            self._check_at_press(element.node_id, doc_x, doc_y)
+            self._check_at_press(plan.control.node_id, doc_x, doc_y)
         except _RefusedError as e:
             return finish.refused(e.refusal, e.detail, path, changed)
 
@@ -258,14 +364,16 @@ class Executor:
         self._page.mouse.up()
         if action.kind == TYPE:
             self._replace_text(action.text or '')
+        elif action.kind == SELECT:
+            self._pick_option(plan.option_steps)
         return finish.done(path, changed)
 
-    def _check_before(self, observation: observer.Observation,
-                      action: Action) -> observer.Element:
+    def _plan(self, observation: observer.Observation,
+              action: Action) -> '_Plan':
         """Checks the action against the observation and the live page.
 
         Returns:
-          The target element.
+          What to press, and for SELECT how far down the dropdown to go.
 
         Raises:
           _RefusedError: The action must not be performed.
@@ -274,26 +382,15 @@ class Executor:
             raise _RefusedError(
                 Refusal.OBSERVATION_USED,
                 'This observation was already acted on; observe again.')
-        if action.kind not in _ROLES_FOR_ACTION:
-            raise _RefusedError(Refusal.BAD_ACTION,
-                                f'Unknown action kind {action.kind!r}.')
-        if action.kind == TYPE and action.text is None:
-            raise _RefusedError(Refusal.BAD_ACTION, 'Typing needs text.')
-        matches = [e for e in observation.elements
-                   if e.node_id == action.target]
-        if len(matches) != 1:
-            raise _RefusedError(
-                Refusal.UNKNOWN_TARGET,
-                f'{len(matches)} observed elements have node_id '
-                f'{action.target}.')
-        problem = _element_problem(matches[0], action.kind)
-        if problem is not None:
-            raise _RefusedError(*problem)
+        _check_fields(action)
+        plan = _Plan(control=None, option_steps=0)
+        if action.kind != SCROLL:
+            plan = _element_plan(observation, action)
         if not self._watcher.is_current(observation):
             raise _RefusedError(
                 Refusal.STALE_OBSERVATION,
                 'The page changed since the observation; observe again.')
-        return matches[0]
+        return plan
 
     def _check_at_press(self, node_id: int, doc_x: float,
                         doc_y: float) -> None:
@@ -333,12 +430,108 @@ class Executor:
         self.pointer = (x, y)
         return tuple(points)
 
+    def _scroll(self, scroll_y: float,
+                finish: '_ResultBuilder') -> ActionResult:
+        """Scrolls with the mouse wheel at the current mouse position.
+
+        The page scrolls unless the mouse is over a scrollable element,
+        which then scrolls instead; the after-observation records which.
+        """
+        point = PathPoint(self.pointer[0], self.pointer[1],
+                          _elapsed_ms(finish.started))
+        self._page.mouse.wheel(0, scroll_y)
+        return finish.done((point,), changed=False)
+
+    def _pick_option(self, steps: int) -> None:
+        """Picks an option in the dropdown the press just opened: Home goes
+        to the first enabled option, each ArrowDown to the next enabled
+        one (disabled options are skipped), and Enter commits once."""
+        keyboard = self._page.keyboard
+        keyboard.press('Home')
+        for _ in range(steps):
+            keyboard.press('ArrowDown')
+        keyboard.press('Enter')
+
     def _replace_text(self, text: str) -> None:
         """Replaces the focused field's contents, one key at a time."""
         keyboard = self._page.keyboard
         keyboard.press('ControlOrMeta+A')
         keyboard.press('Backspace')
         keyboard.type(text, delay=self._speed.key_delay_ms)
+
+
+@dataclasses.dataclass(frozen=True)
+class _Plan:
+    """What an accepted action will press.
+
+    Attributes:
+      control: The element to press, or None for SCROLL.
+      option_steps: For SELECT, ArrowDown presses from the first enabled
+        option to the chosen one.
+    """
+
+    control: observer.Element | None
+    option_steps: int
+
+
+def _check_fields(action: Action) -> None:
+    """Rejects an action whose fields do not fit its kind.
+
+    Raises:
+      _RefusedError: With `BAD_ACTION`.
+    """
+    def bad(detail: str) -> _RefusedError:
+        return _RefusedError(Refusal.BAD_ACTION, detail)
+
+    if action.kind not in ACTION_KINDS:
+        raise bad(f'Unknown action kind {action.kind!r}.')
+    if action.kind == SCROLL:
+        if action.target is not None:
+            raise bad('Only page scrolling is supported; target must be None.')
+        if not action.scroll_y or not math.isfinite(action.scroll_y):
+            raise bad('Scrolling needs a non-zero, finite scroll_y.')
+        return
+    if action.target is None:
+        raise bad(f'{action.kind} needs an element target.')
+    if action.kind == TYPE and action.text is None:
+        raise bad('Typing needs text.')
+    if action.kind == CHECK and action.checked is None:
+        raise bad('Checking needs the state to set.')
+
+
+def _element_plan(observation: observer.Observation,
+                  action: Action) -> _Plan:
+    """Resolves an element-targeted action against the observation.
+
+    Raises:
+      _RefusedError: The target is missing, unsupported or unusable.
+    """
+    matches = [e for e in observation.elements if e.node_id == action.target]
+    if len(matches) != 1:
+        raise _RefusedError(
+            Refusal.UNKNOWN_TARGET,
+            f'{len(matches)} observed elements have node_id {action.target}.')
+    target = matches[0]
+    problem = _control_problem(observation, target, action.kind)
+    if problem is not None:
+        raise _RefusedError(*problem)
+    if action.kind == CHECK:
+        if target.role == 'radio' and not action.checked:
+            raise _RefusedError(Refusal.BAD_ACTION,
+                                'A radio button cannot be unchecked by '
+                                'clicking it.')
+        if bool(target.states.get('checked')) == action.checked:
+            raise _RefusedError(Refusal.ALREADY_IN_STATE,
+                                f'The target is already checked='
+                                f'{action.checked}.')
+    if action.kind != SELECT:
+        return _Plan(control=target, option_steps=0)
+    dropdown = _dropdown_of(observation, target)
+    if dropdown is None:  # Ruled out by _control_problem; keeps types exact.
+        raise _RefusedError(Refusal.UNSUPPORTED_ROLE, 'No dropdown.')
+    enabled = [o for o in _options_of(observation, dropdown)
+               if not o.states.get('disabled')]
+    return _Plan(control=dropdown, option_steps=enabled.index(target))
 
 
 class _RefusedError(Exception):

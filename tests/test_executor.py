@@ -108,7 +108,8 @@ def _click(element: observer.Element) -> executor.Action:
 def test_click_next_from_affordances(world):
     hand = executor.Executor(world.page, world.watcher)
     before = world.watcher.observe()
-    choices = executor.available_actions(before)
+    choices = [c for c in executor.available_actions(before)
+               if c.kind == executor.CLICK]
     assert [(c.kind, c.name) for c in choices] == [('click', 'Next')]
 
     result = hand.execute(before, executor.Action(choices[0].kind,

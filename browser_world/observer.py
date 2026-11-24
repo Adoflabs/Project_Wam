@@ -96,7 +96,8 @@ _TEMPORAL_INIT_SCRIPT = """
 (() => {
   const MAX_EVENTS = 5000;
   const INTERACTIONS = ['input', 'change', 'focusin', 'focusout', 'scroll'];
-  const state = {mutations: 0, total: 0, last: performance.now(), dropped: 0,
+  const state = {mutations: 0, total: 0, last: performance.now(),
+                 lastActivity: performance.now(), dropped: 0,
                  events: [{kind: 'document_start', t: performance.now()}]};
   const log = (event) => {
     if (state.events.length < MAX_EVENTS) state.events.push(event);
@@ -105,13 +106,15 @@ _TEMPORAL_INIT_SCRIPT = """
   for (const type of INTERACTIONS) {
     document.addEventListener(type, () => {
       state.total += 1;
-      log({kind: 'interaction', t: performance.now(), type});
+      state.lastActivity = performance.now();
+      log({kind: 'interaction', t: state.lastActivity, type});
     }, {capture: true, passive: true});
   }
   new MutationObserver((records) => {
     state.mutations += records.length;
     state.total += records.length;
     state.last = performance.now();
+    state.lastActivity = state.last;
     log({kind: 'mutation', t: state.last, count: records.length});
   }).observe(document, {subtree: true, childList: true, attributes: true,
                         characterData: true});
@@ -154,7 +157,8 @@ _TEMPORAL_INIT_SCRIPT = """
     },
     peek() {
       return {mutations: state.mutations, total: state.total,
-              msSinceMutation: performance.now() - state.last};
+              msSinceMutation: performance.now() - state.last,
+              msSinceActivity: performance.now() - state.lastActivity};
     },
   }});
 })();
@@ -163,6 +167,10 @@ _NO_TEMPORAL = '{mutations: 0, total: 0, msSinceMutation: 0}'
 _NO_EVENTS = '{events: [], dropped: 0, now: performance.now(), missing: true}'
 _DIGEST_JS = ('window.__wamTemporal ? window.__wamTemporal.digest() : '
               '"no-temporal-script"')
+_MARKER_JS = ('window.__wamTemporal ? [window.__wamTemporal.peek().total, '
+              'window.__wamTemporal.digest()] : null')
+# Captures retried when the page changes while an observation is taken.
+_CAPTURE_ATTEMPTS = 3
 
 
 @dataclasses.dataclass(frozen=True)
@@ -377,6 +385,9 @@ class Observation:
         identifies the page version observed.
       state_digest: Live field values, checked states, selections, focus
         and scroll offsets when observed, for detecting silent changes.
+      consistent: Whether the page version and live state were the same
+        before and after the capture, so all planes describe one moment.
+        False after repeated retries on a page that keeps changing.
       url: The page URL.
       title: The document title.
       elements: Observed elements in document order.
@@ -388,6 +399,7 @@ class Observation:
     page_epoch: int
     page_version: int
     state_digest: str
+    consistent: bool
     url: str
     title: str
     elements: tuple[Element, ...]
@@ -410,6 +422,7 @@ class Observation:
             'page_epoch': self.page_epoch,
             'page_version': self.page_version,
             'state_digest': self.state_digest,
+            'consistent': self.consistent,
             'url': self.url,
             'title': self.title,
             'elements': [e.to_dict(planes) for e in self.elements],
@@ -658,10 +671,11 @@ class Observer:
 
     def wait_until_settled(self, quiet_ms: float = 100,
                            timeout_ms: float = 5000) -> bool:
-        """Waits until no requests are in flight and the DOM is quiet.
+        """Waits until no requests are in flight and the page is quiet.
 
         Args:
-          quiet_ms: Required time without DOM mutations.
+          quiet_ms: Required time without DOM mutations or input, change,
+            focus or scroll events.
           timeout_ms: Maximum time to wait.
 
         Returns:
@@ -674,7 +688,7 @@ class Observer:
             self._page.wait_for_timeout(20)
             quiet = self._page.evaluate(
                 'window.__wamTemporal ? '
-                'window.__wamTemporal.peek().msSinceMutation : 0')
+                'window.__wamTemporal.peek().msSinceActivity : 0')
             if not self._pending_requests and quiet >= quiet_ms:
                 self._settled = True
                 return True
@@ -683,7 +697,22 @@ class Observer:
                 return False
 
     def observe(self) -> Observation:
-        """Captures all four planes and resets the temporal counters."""
+        """Captures all four planes and resets the temporal counters.
+
+        The capture takes several browser calls, so the page version and
+        live state are read before and after it; if they differ, the page
+        changed mid-capture and it is retried. After `_CAPTURE_ATTEMPTS`
+        the last capture is returned with `consistent=False`.
+        """
+        for _ in range(_CAPTURE_ATTEMPTS):
+            marker = self._page.evaluate(_MARKER_JS)
+            captured = self._capture()
+            if self._page.evaluate(_MARKER_JS) == marker:
+                return self._finish(*captured, consistent=True)
+        return self._finish(*captured, consistent=False)
+
+    def _capture(self) -> tuple[list[Element], Box, '_DomSnapshot']:
+        """Reads the semantic, geometry and motion planes once."""
         ax_nodes = self._cdp.send('Accessibility.getFullAXTree')['nodes']
         snapshot = _DomSnapshot(self._cdp.send(
             'DOMSnapshot.captureSnapshot', {
@@ -698,6 +727,11 @@ class Observer:
         elements = self._elements(ax_nodes, snapshot, viewport)
         if self._cull_offscreen:
             elements = [e for e in elements if e.in_viewport or e.box is None]
+        return elements, viewport, snapshot
+
+    def _finish(self, elements: list[Element], viewport: Box,
+                snapshot: '_DomSnapshot', consistent: bool) -> Observation:
+        """Adds the temporal plane and identifiers to a capture."""
         temporal, page_version = self._take_temporal()
         state_digest = self._page.evaluate(_DIGEST_JS)
         self._sequence += 1
@@ -716,6 +750,7 @@ class Observer:
             page_epoch=self._page_epoch,
             page_version=page_version,
             state_digest=state_digest,
+            consistent=consistent,
             url=self._page.url,
             title=self._page.title(),
             elements=tuple(elements),
@@ -1047,6 +1082,8 @@ def observation_from_dict(data: Mapping[str, Any]) -> Observation:
         page_epoch=data['page_epoch'],
         page_version=data['page_version'],
         state_digest=data['state_digest'],
+        # Records made before this field existed have unknown consistency.
+        consistent=data.get('consistent', False),
         url=data['url'],
         title=data['title'],
         elements=elements,

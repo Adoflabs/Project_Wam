@@ -128,7 +128,8 @@ def test_reset_reload_and_replay_reproduce_the_transition(world, tmp_path):
                             _choose(before, executor.CLICK, 'Next'))
         assert isinstance(t, recorder.Transition), t
         runs.append(t)
-    first, second = runs
+    assert len(runs) == 2
+    first, second = runs  # pylint: disable=unbalanced-tuple-unpacking  # Built above.
     assert first.run_id != second.run_id  # A reset starts a separate run.
     assert (first.step, second.step) == (0, 0)
     assert first.before.page_epoch != second.before.page_epoch  # Reloaded.
@@ -202,4 +203,5 @@ def test_model_input_cannot_leak_privileged_data(next_transition):
     assert booking.MSG_SERVICE_REQUIRED not in text  # Future outcome.
     assert projected['action'] == {'kind': 'click',
                                    'target_index': t.target.index,
-                                   'text': None}
+                                   'text': None, 'checked': None,
+                                   'scroll_y': None}

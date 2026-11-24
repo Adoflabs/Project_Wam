@@ -102,7 +102,7 @@ class Transition:
       recorded_at_ms: Wall-clock time the step started.
       before: The observation the decider acted on.
       action: The decided action.
-      target: The action's target in `before`.
+      target: The action's target in `before`; None for page scrolling.
       result: What the executor did, including the mouse path.
       events: Browser events from just before the mouse moved until the
         page settled or timed out, with their completeness.
@@ -123,7 +123,7 @@ class Transition:
     recorded_at_ms: float
     before: observer.Observation
     action: executor.Action
-    target: Target
+    target: Target | None
     result: executor.ActionResult
     events: observer.EventTrace
     window_ms: float
@@ -144,7 +144,8 @@ class Transition:
             'recorded_at_ms': self.recorded_at_ms,
             'before': self.before.to_dict(),
             'action': dataclasses.asdict(self.action),
-            'target': dataclasses.asdict(self.target),
+            'target': (dataclasses.asdict(self.target)
+                       if self.target is not None else None),
             'result': self.result.to_dict(),
             'events': [dataclasses.asdict(e) for e in self.events.events],
             'events_status': self.events.status(),
@@ -159,12 +160,21 @@ class Transition:
 
 @dataclasses.dataclass
 class _Run:
-    """Recorder-side state of one continuous run."""
+    """Recorder-side state of one continuous run.
+
+    Attributes:
+      episode_id: The episode the run belongs to.
+      origin: How the run began.
+      next_step: The step number the next recorded transition gets.
+      last_after: The previous step's after-observation, or None.
+      last_truth: Backend truth after the previous step.
+    """
 
     episode_id: str
     origin: str
     next_step: int = 0
-    last_after: dict[str, Any] | None = None
+    last_after: observer.Observation | None = None
+    last_truth: Any = None
 
 
 class Recorder:
@@ -243,9 +253,10 @@ class Recorder:
         if run is None:
             raise ValueError(f'Unknown run {run_id!r}; call new_run() first.')
         step = run.next_step
-        continuity = _continuity(run, before)
+        target = _target_of(before, action)
         recorded_at_ms = time.time() * 1000
         truth_before = self._truth()
+        continuity = _continuity(run, before, truth_before)
         artifacts = self._capture(run_id, step, 'before')
         self._watcher.start_events()
         window_start = time.monotonic()
@@ -263,8 +274,6 @@ class Recorder:
         truth = None
         if self._truth_fn is not None:
             truth = {'before': truth_before, 'after': self._truth()}
-        run.next_step += 1
-        run.last_after = canonical(after)
         transition = Transition(
             schema_version=SCHEMA_VERSION,
             run_id=run_id,
@@ -274,7 +283,7 @@ class Recorder:
             recorded_at_ms=recorded_at_ms,
             before=before,
             action=action,
-            target=_target_of(before, action),
+            target=target,
             result=result,
             events=events,
             window_ms=window_ms,
@@ -285,6 +294,10 @@ class Recorder:
             artifacts=artifacts,
         )
         self._append(self.transitions_path, transition.to_dict())
+        # Only a written record moves the run forward.
+        run.next_step += 1
+        run.last_after = after
+        run.last_truth = truth['after'] if truth is not None else None
         return transition
 
     def _truth(self) -> Any:
@@ -322,25 +335,38 @@ class Recorder:
 
 
 def _target_of(before: observer.Observation,
-               action: executor.Action) -> Target:
-    """Describes the action's target as it appears in `before`.
-
-    Raises:
-      ValueError: The target is not in `before`; the executor would have
-        refused such an action.
-    """
+               action: executor.Action) -> Target | None:
+    """Describes the action's target as it appears in `before`, or None
+    when there is no element target (page scrolling) or it is not in
+    `before` (the executor then refuses, so nothing is recorded)."""
     for index, element in enumerate(before.elements):
         if element.node_id == action.target:
             return Target(element.node_id, index, element.role,
                           element.name, element.match_key)
-    raise ValueError(f'Target {action.target} is not in the observation.')
+    return None
 
 
-def _continuity(run: _Run, before: observer.Observation) -> Continuity:
-    """Compares `before` with the run's previous after-state."""
-    if run.last_after is None:
+def _continuity(run: _Run, before: observer.Observation,
+                truth_before: Any) -> Continuity:
+    """Compares `before` with the run's previous after-state.
+
+    Besides the visible content, nothing may have happened in between: the
+    same document (no reload), the same page version (no DOM change or
+    interaction) and the same backend truth (no reset behind the page).
+    """
+    last = run.last_after
+    if last is None:
         return Continuity(previous_step=None, continuous=True, differences=())
-    found = differences(run.last_after, canonical(before))
+    found = differences(canonical(last), canonical(before))
+    if before.page_epoch != last.page_epoch:
+        found.append('page epoch changed: the page navigated or reloaded '
+                     'outside a recorded action')
+    elif before.page_version != last.page_version:
+        found.append(f'page version {last.page_version} -> '
+                     f'{before.page_version}: the page changed outside a '
+                     'recorded action')
+    if truth_before != run.last_truth:
+        found.append('backend truth changed outside a recorded action')
     return Continuity(previous_step=run.next_step - 1, continuous=not found,
                       differences=tuple(found))
 
@@ -378,6 +404,10 @@ def sequence_problems(record: Mapping[str, Any]) -> list[str]:
     if record.get('schema_version', 0) < 2:
         return ['legacy record without run identity or continuity check']
     problems = []
+    for moment in ('before', 'after'):
+        if not record[moment].get('consistent', False):
+            problems.append(f'{moment}-observation was not captured at one '
+                            'consistent moment')
     if not record['continuity']['continuous']:
         problems.append('before-state does not match the previous '
                         "step's after-state")
@@ -483,10 +513,11 @@ def model_input(transition: Transition) -> dict[str, Any]:
 
     It holds the before-state's elements without Chrome ids or
     `match_key` (parents become list positions), the page-level motion
-    plane, and the action with its target as a list position. It excludes
-    the result, events, after-state, backend truth, artifacts and
-    identifiers. It also leaves out the before-state's temporal plane for
-    now: its counts depend on when the previous observation was taken
+    plane, and the action: its kind, its target as a list position (None
+    for page scrolling), and its text, checked state or scroll distance.
+    It excludes the result, events, after-state, backend truth, artifacts
+    and identifiers. It also leaves out the before-state's temporal plane
+    for now: its counts depend on when the previous observation was taken
     rather than on what the page shows.
     """
     before = canonical(transition.before)
@@ -500,7 +531,10 @@ def model_input(transition: Transition) -> dict[str, Any]:
         },
         'action': {
             'kind': transition.action.kind,
-            'target_index': transition.target.index,
+            'target_index': (transition.target.index
+                             if transition.target is not None else None),
             'text': transition.action.text,
+            'checked': transition.action.checked,
+            'scroll_y': transition.action.scroll_y,
         },
     }
