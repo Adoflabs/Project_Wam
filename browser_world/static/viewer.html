@@ -1,0 +1,811 @@
+<title>WAM Observer</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&display=swap">
+<style>
+  /* Layout: instrument panel. Timeline rail, wireframe canvas, plane readouts. */
+  :root {
+    --bg: #f3f5f8;
+    --panel: #ffffff;
+    --ink: #17202c;
+    --muted: #5b6878;
+    --line: #d5dbe3;
+    --accent: #1f6fb2;
+    --accent-soft: #e2eef8;
+    --change: #b8740a;
+    --change-soft: #fbefd9;
+    --bad: #b42318;
+    --bad-soft: #fbe4e1;
+    --good: #2f7d4f;
+    --code-bg: #eef1f5;
+    --font-body: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+    --font-head: 'IBM Plex Sans Condensed', 'IBM Plex Sans', system-ui, sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f141b; --panel: #161d27; --ink: #e4e9f0; --muted: #93a0b2;
+      --line: #2a3442; --accent: #5aa7e6; --accent-soft: #1a2b3d;
+      --change: #e3a23b; --change-soft: #33270f; --bad: #f07a6e;
+      --bad-soft: #3a1d1a; --good: #6cc191; --code-bg: #111821;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f141b; --panel: #161d27; --ink: #e4e9f0; --muted: #93a0b2;
+    --line: #2a3442; --accent: #5aa7e6; --accent-soft: #1a2b3d;
+    --change: #e3a23b; --change-soft: #33270f; --bad: #f07a6e;
+    --bad-soft: #3a1d1a; --good: #6cc191; --code-bg: #111821;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 var(--font-body);
+  }
+  .wrap {
+    max-width: 1320px; margin: 0 auto;
+    padding-block: 20px 48px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  h1, h2, h3 { font-family: var(--font-head); text-wrap: balance; margin: 0; }
+  h1 { font-size: 1.7rem; letter-spacing: 0.01em; }
+  h2 { font-size: 1.15rem; }
+  h3 { font-size: 0.95rem; }
+  code, pre, .mono { font-family: var(--font-mono); font-size: 0.82rem; }
+  .eyebrow {
+    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.09em;
+    color: var(--muted); font-weight: 600;
+  }
+  header.top {
+    display: flex; flex-wrap: wrap; align-items: end; gap: 12px 24px;
+    justify-content: space-between; margin-bottom: 16px;
+  }
+  .lede { color: var(--muted); max-width: 70ch; margin: 4px 0 0; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border-radius: 999px; font-size: 0.78rem;
+    background: var(--accent-soft); color: var(--accent); font-weight: 600;
+  }
+  .badge .dot { width: 7px; height: 7px; border-radius: 50%;
+    background: currentColor; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line);
+    margin-bottom: 16px; }
+  .tabs button {
+    font: inherit; font-weight: 600; background: none; border: 0;
+    color: var(--muted); padding: 8px 14px; cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .tabs button[aria-selected="true"] { color: var(--ink);
+    border-bottom-color: var(--accent); }
+  button:focus-visible, input:focus-visible, li:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 6px; padding: 14px 16px; min-width: 0;
+  }
+
+  /* Observer tab */
+  .observer {
+    display: grid; gap: 16px;
+    grid-template-columns: minmax(200px, 250px) minmax(0, 1.25fr) minmax(0, 1fr);
+    align-items: start;
+  }
+  @media (max-width: 1100px) {
+    .observer { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .timeline { grid-column: 1 / -1; }
+  }
+  @media (max-width: 720px) {
+    .observer { grid-template-columns: minmax(0, 1fr); }
+  }
+  .timeline ol { list-style: none; margin: 8px 0 0; padding: 0;
+    max-height: 560px; overflow-y: auto; }
+  @media (max-width: 1100px) { .timeline ol { max-height: 180px; } }
+  .timeline li {
+    display: grid; grid-template-columns: 2.2em 1fr; gap: 4px;
+    padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 0.85rem;
+  }
+  .timeline li:hover { background: var(--code-bg); }
+  .timeline li[aria-current="true"] { background: var(--accent-soft);
+    color: var(--ink); font-weight: 600; }
+  .timeline .n { color: var(--muted); font-variant-numeric: tabular-nums;
+    font-family: var(--font-mono); font-size: 0.78rem; padding-top: 1px; }
+  .stepper { display: flex; gap: 6px; margin-top: 10px; }
+  .stepper button, .btn {
+    font: inherit; font-size: 0.85rem; padding: 5px 12px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--panel);
+    color: var(--ink); border-radius: 4px;
+  }
+  .stepper button:disabled { opacity: 0.4; cursor: default; }
+  .frame-title { display: flex; flex-wrap: wrap; align-items: baseline;
+    gap: 6px 12px; margin-bottom: 10px; }
+  .frame-title .mono { color: var(--muted); }
+  .planes { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0 0 10px;
+    font-size: 0.85rem; }
+  .planes label { display: inline-flex; gap: 6px; align-items: center;
+    cursor: pointer; }
+  .canvas {
+    border: 1px solid var(--line); border-radius: 4px; background: var(--bg);
+    overflow: hidden;
+  }
+  .canvas svg { display: block; width: 100%; height: auto; }
+  .canvas .empty { padding: 40px 16px; text-align: center; color: var(--muted); }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px;
+    font-size: 0.75rem; color: var(--muted); }
+  .legend span::before {
+    content: ""; display: inline-block; width: 10px; height: 10px;
+    margin-right: 5px; vertical-align: -1px; border: 1.5px solid var(--sw);
+    background: var(--sw-bg, transparent);
+  }
+  pre.obs {
+    margin: 12px 0 0; padding: 10px 12px; background: var(--code-bg);
+    border-radius: 4px; overflow: auto; max-height: 300px; line-height: 1.45;
+  }
+  .side { display: grid; gap: 16px; min-width: 0; }
+  .delta-list { list-style: none; margin: 8px 0 0; padding: 0;
+    display: grid; gap: 6px; font-size: 0.84rem; }
+  .delta-list li { padding: 6px 8px; border-radius: 4px; min-width: 0;
+    overflow-wrap: anywhere; }
+  .delta-list .added { background: var(--accent-soft); }
+  .delta-list .removed { background: var(--bad-soft); }
+  .delta-list .changed { background: var(--change-soft); }
+  .tag { font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.06em; margin-right: 6px; }
+  .added .tag { color: var(--accent); }
+  .removed .tag { color: var(--bad); }
+  .changed .tag { color: var(--change); }
+  .muted { color: var(--muted); }
+  .readout { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px;
+    font-size: 0.84rem; margin: 8px 0 0; }
+  .readout dt { color: var(--muted); }
+  .readout dd { margin: 0; font-family: var(--font-mono); font-size: 0.8rem;
+    font-variant-numeric: tabular-nums; }
+  .plane-off { color: var(--muted); font-size: 0.82rem; margin: 8px 0 0; }
+  .table-wrap { overflow-x: auto; margin-top: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.8rem; }
+  th, td { text-align: left; padding: 4px 8px 4px 0; vertical-align: top;
+    border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 0.72rem;
+    text-transform: uppercase; letter-spacing: 0.06em; }
+  td.mono { white-space: nowrap; }
+  .flag { display: inline-block; font-size: 0.7rem; padding: 0 5px;
+    border-radius: 3px; margin: 1px 3px 1px 0; background: var(--code-bg); }
+  .flag.invalid { background: var(--bad-soft); color: var(--bad); }
+
+  /* Code map tab */
+  .flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px;
+    margin: 12px 0 4px; }
+  .flow .node {
+    flex: 1 1 150px; min-width: 0; border: 1px solid var(--line);
+    background: var(--panel); border-radius: 6px; padding: 10px 12px;
+  }
+  .flow .node.next { border-style: dashed; color: var(--muted); }
+  .flow .node b { display: block; font-family: var(--font-head); }
+  .flow .node code { color: var(--accent); }
+  .flow .node p { margin: 4px 0 0; font-size: 0.82rem; color: var(--muted); }
+  .flow .arrow { align-self: center; color: var(--muted);
+    font-family: var(--font-mono); }
+  @media (max-width: 720px) { .flow .arrow { display: none; } }
+  .map { display: grid; gap: 16px;
+    grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); margin-top: 20px; }
+  @media (max-width: 860px) { .map { grid-template-columns: minmax(0, 1fr); } }
+  .tree { font-family: var(--font-mono); font-size: 0.82rem; line-height: 1.75; }
+  .tree ul { list-style: none; margin: 0; padding-left: 16px;
+    border-left: 1px solid var(--line); }
+  .tree > ul { padding-left: 0; border: 0; }
+  .tree button {
+    font: inherit; background: none; border: 0; color: var(--ink);
+    padding: 0 4px; cursor: pointer; border-radius: 3px; text-align: left;
+  }
+  .tree button:hover { background: var(--code-bg); }
+  .tree button[aria-current="true"] { background: var(--accent-soft);
+    color: var(--accent); font-weight: 500; }
+  .tree .dir { color: var(--muted); }
+  .tree .new { font-family: var(--font-body); font-size: 0.68rem;
+    color: var(--good); margin-left: 4px; }
+  .file-detail h2 { font-family: var(--font-mono); font-size: 1rem;
+    font-weight: 500; }
+  .file-detail .role { margin: 6px 0 0; max-width: 70ch; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .chip { font-size: 0.75rem; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); }
+  .fn-table td:first-child { font-family: var(--font-mono); font-size: 0.78rem;
+    white-space: nowrap; color: var(--accent); padding-right: 14px; }
+  .libs { display: grid; gap: 10px; margin-top: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .libs div { border-top: 2px solid var(--line); padding-top: 8px;
+    font-size: 0.85rem; }
+  .libs b { font-family: var(--font-head); }
+  .run pre { background: var(--code-bg); padding: 10px 12px; border-radius: 4px;
+    overflow-x: auto; margin: 8px 0 0; }
+  .section { margin-top: 24px; }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <p class="eyebrow">Project WAM · browser world, gates E0.1–E0.2</p>
+      <h1>WAM Observer</h1>
+      <p class="lede">What the four-plane observer sees on the booking site,
+        after every action. The wireframe is drawn only from the observation
+        data. No screenshot is ever taken.</p>
+    </div>
+    <span class="badge" id="mode-badge"><span class="dot"></span><span
+      id="mode-text">Connecting…</span></span>
+  </header>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tab-observer" aria-selected="true"
+            aria-controls="view-observer">Observer</button>
+    <button role="tab" id="tab-code" aria-selected="false"
+            aria-controls="view-code">Code map</button>
+  </div>
+
+  <section id="view-observer" role="tabpanel" aria-labelledby="tab-observer">
+    <div class="observer">
+      <nav class="panel timeline" aria-label="Frames">
+        <p class="eyebrow">Frames</p>
+        <ol id="timeline"></ol>
+        <div class="stepper">
+          <button id="prev" type="button">← Prev</button>
+          <button id="next" type="button">Next →</button>
+          <button id="follow" type="button" hidden>Follow live</button>
+        </div>
+      </nav>
+
+      <div class="panel">
+        <div class="frame-title">
+          <h2 id="frame-label">Waiting for the first observation</h2>
+          <span class="mono" id="frame-meta"></span>
+        </div>
+        <div class="planes" id="plane-toggles">
+          <label><input type="checkbox" id="pl-semantic" checked>Semantic</label>
+          <label><input type="checkbox" id="pl-geometry" checked>Geometry</label>
+          <label><input type="checkbox" id="pl-motion" checked>Motion</label>
+          <label><input type="checkbox" id="pl-temporal" checked>Temporal</label>
+        </div>
+        <div class="canvas" id="canvas"><p class="empty">No frame yet.</p></div>
+        <div class="legend">
+          <span style="--sw: var(--accent)">interactive</span>
+          <span style="--sw: var(--muted)">structure / text</span>
+          <span style="--sw: var(--bad); --sw-bg: var(--bad-soft)">alert / invalid</span>
+          <span style="--sw: var(--change); --sw-bg: var(--change-soft)">changed in this frame</span>
+          <span style="--sw: var(--muted)">dashed = viewport / pinned</span>
+        </div>
+        <pre class="obs" id="obs-text" aria-label="Observation as text"></pre>
+      </div>
+
+      <div class="side">
+        <div class="panel">
+          <p class="eyebrow">What changed since the previous frame</p>
+          <p class="muted" style="margin:4px 0 0;font-size:.82rem">This delta is
+            what the world model will learn to predict before the action.</p>
+          <ul class="delta-list" id="delta"></ul>
+        </div>
+        <div class="panel">
+          <p class="eyebrow">Semantic plane</p>
+          <div id="semantic"></div>
+        </div>
+        <div class="panel">
+          <p class="eyebrow">Motion and temporal planes</p>
+          <div id="motion-temporal"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="view-code" role="tabpanel" aria-labelledby="tab-code" hidden>
+    <h2>How the pieces connect</h2>
+    <div class="flow">
+      <div class="node"><b>Booking rules</b><code>booking.py</code>
+        <p>Services, doctors, dates, slots, validation, bookings, reset.</p></div>
+      <span class="arrow">→</span>
+      <div class="node"><b>Server</b><code>server.py</code>
+        <p>JSON API over the rules, one isolated session per worker.</p></div>
+      <span class="arrow">→</span>
+      <div class="node"><b>Booking page</b><code>app.html · app.js</code>
+        <p>Three-step wizard running in real Chromium.</p></div>
+      <span class="arrow">→</span>
+      <div class="node"><b>Observer</b><code>observer.py</code>
+        <p>Reads four planes over Chrome DevTools Protocol.</p></div>
+      <span class="arrow">→</span>
+      <div class="node"><b>Delta</b><code>delta.py</code>
+        <p>What changed between two observations.</p></div>
+      <span class="arrow">→</span>
+      <div class="node next"><b>Next: recorder</b>
+        <p>Saves before → action → after records for training.</p></div>
+    </div>
+
+    <div class="map">
+      <div class="panel tree" id="tree"></div>
+      <div class="panel file-detail" id="file-detail"></div>
+    </div>
+
+    <div class="section panel">
+      <h2>Libraries and browser calls used</h2>
+      <div class="libs" id="libs"></div>
+    </div>
+
+    <div class="section panel run">
+      <h2>Run it on your machine</h2>
+      <p class="muted" style="margin:4px 0 0">From the repository root, on
+        branch <code>claude/jolly-meitner-4d2dd9</code>.</p>
+      <pre>pip install -r requirements.txt
+playwright install chromium
+python -m browser_world.live_demo</pre>
+      <p style="margin:8px 0 0">A Chromium window opens on the booking site.
+        Open <code>http://127.0.0.1:7801</code> in your own browser and use the
+        Chromium window: this viewer updates after every change you make.</p>
+      <pre>python -m pytest          # all tests
+python -m browser_world.inspect_page   # one observation in the terminal</pre>
+    </div>
+  </section>
+</div>
+
+<script id="wam-recorded" type="application/json"></script>
+<script>
+'use strict';
+
+const CODE_MAP = [
+  {path: 'browser_world/', dir: true},
+  {path: 'browser_world/__init__.py', depth: 1,
+   role: 'Marks browser_world as a Python package. Empty.', uses: [], fns: []},
+  {path: 'browser_world/booking.py', depth: 1, isNew: true,
+   role: 'The ground truth of the environment. Holds the booking rules and each session\'s state, with no web or browser code. Same scenario + same requests always give the same results, because the scenario fixes "today".',
+   uses: ['dataclasses', 'datetime', 're', 'threading'],
+   fns: [
+     ['Scenario', 'Immutable description of one world: date, services, doctors, slot times, prebooked slots, the hidden race slot, loading delay.'],
+     ['default_scenario()', 'The fixed scenario used by tests and demos (today = Mon 23 Nov 2026).'],
+     ['BookingSession', 'One isolated world. Methods below.'],
+     ['  .doctors(service)', 'Doctors who offer a service.'],
+     ['  .dates(doctor)', 'Bookable dates: tomorrow onward, only the doctor\'s working days.'],
+     ['  .slots(doctor, date)', 'Time slots with available true/false.'],
+     ['  .validate_appointment(form)', 'Step 1 check; reports the first missing choice.'],
+     ['  .validate_details(form)', 'Step 2 check; reports every invalid field.'],
+     ['  .book(form)', 'Creates a booking, or raises ValidationError / SlotTakenError (the race).'],
+     ['  .reset()', 'Restores the starting state exactly.'],
+     ['SessionRegistry.get(id)', 'Returns (or creates) the session for one worker, so workers never interfere.'],
+     ['is_valid_email(), is_valid_phone()', 'The validation rules. The model must learn these from outcomes.'],
+   ]},
+  {path: 'browser_world/server.py', depth: 1, isNew: true,
+   role: 'Web server for the booking page and its JSON API. Each request names its session in the X-WAM-Session header. /api/truth/* returns backend facts for data collection; the page never calls it.',
+   uses: ['Starlette', 'Uvicorn', 'asyncio', 'argparse'],
+   fns: [
+     ['create_app(scenario)', 'Builds the app with all routes below.'],
+     ['GET /api/services, /doctors, /dates, /slots', 'Catalog lookups that drive the dropdowns and time slots.'],
+     ['POST /api/validate/{appointment|details}', 'Server-side validation for each step.'],
+     ['POST /api/bookings', '201 booked · 422 invalid · 409 taken by someone else.'],
+     ['POST /api/reset', 'Restores the session.'],
+     ['GET /api/truth/bookings', 'Ground truth: what was really booked.'],
+     ['main()', 'python -m browser_world.server --port 7800'],
+   ]},
+  {path: 'browser_world/static/', dir: true, depth: 1},
+  {path: 'browser_world/static/app.html', depth: 2, isNew: true,
+   role: 'The booking page: appointment → details → review → confirmation. Real form controls, inline errors, a sticky header. data-wam-key attributes give stable identities for matching elements across observations; they are never model input.',
+   uses: ['HTML', 'CSS'], fns: []},
+  {path: 'browser_world/static/app.js', depth: 2, isNew: true,
+   role: 'Page behaviour. Renders server responses only; every rule stays in Python.',
+   uses: ['JavaScript', 'fetch'],
+   fns: [
+     ['onServiceChange / onDoctorChange / onDateChange', 'Fill the next dropdown or the time slots; dependent choices reset.'],
+     ['loadSlots()', 'Shows "Loading times…", fetches, then renders. Ignores stale responses.'],
+     ['onAppointmentSubmit / onDetailsSubmit', 'Validate on the server, show errors or move to the next step.'],
+     ['onConfirm()', 'Books; shows the reference or the conflict message.'],
+     ['showStep(step)', 'Shows one step, updates "Step k of 3", moves focus.'],
+   ]},
+  {path: 'browser_world/static/viewer.html', depth: 2, isNew: true,
+   role: 'This page. Live mode polls the demo for new frames; the published copy plays back a recorded session.',
+   uses: ['HTML', 'CSS', 'JavaScript', 'SVG'], fns: []},
+  {path: 'browser_world/observer.py', depth: 1, isNew: true,
+   role: 'The four-plane observer. Turns a live Chromium page into an Observation using the Chrome DevTools Protocol. No pixels, no HTML.',
+   uses: ['Playwright', 'Chrome DevTools Protocol', 'dataclasses'],
+   fns: [
+     ['attach(page)', 'Starts observing a page (call before it navigates).'],
+     ['Observer.observe()', 'Captures all four planes; resets the temporal counters.'],
+     ['Observer.wait_until_settled()', 'Waits until no requests are in flight and the page stops changing.'],
+     ['Observer._elements()', 'Walks the accessibility tree in document order and keeps relevant roles.'],
+     ['Observer._hit_test()', 'Asks Chromium what a click at the element\'s centre would hit (detects overlays).'],
+     ['_DomSnapshot', 'Indexes one DOM snapshot: boxes, paint order, fixed/sticky, stable keys.'],
+     ['Observation / Element / Motion / Temporal', 'The data classes; to_dict(planes) and to_text(planes).'],
+   ]},
+  {path: 'browser_world/delta.py', depth: 1, isNew: true,
+   role: 'Computes what changed between two observations: added, removed and changed elements. This is the world model\'s prediction target.',
+   uses: ['observer'],
+   fns: [
+     ['diff(before, after)', 'Returns url_changed, added, removed, changed (with old/new per field).'],
+     ['element_key(element)', 'Identity across observations: stable key, else role + name.'],
+   ]},
+  {path: 'browser_world/inspect_page.py', depth: 1, isNew: true,
+   role: 'Prints one observation in the terminal.',
+   uses: ['Playwright', 'Uvicorn'],
+   fns: [['main()', 'python -m browser_world.inspect_page [--url URL] [--json]']]},
+  {path: 'browser_world/live_demo.py', depth: 1, isNew: true,
+   role: 'Runs the booking site, a real Chromium window and this viewer together. Records a frame whenever what the page shows changes.',
+   uses: ['Playwright', 'Starlette', 'Uvicorn', 'threading'],
+   fns: [
+     ['FrameLog', 'Thread-safe list of frames, each with its delta from the previous one.'],
+     ['watch_live()', 'Polls the page and records a frame on every visible change.'],
+     ['record()', 'Headless scripted booking used for the published playback.'],
+     ['main()', 'python -m browser_world.live_demo [--record frames.json]'],
+   ]},
+  {path: 'tests/', dir: true},
+  {path: 'tests/conftest.py', depth: 1, isNew: true,
+   role: 'Shared fixtures: starts the server on a free port, launches Chromium, and gives each test its own isolated world.',
+   uses: ['pytest', 'Playwright', 'Uvicorn'],
+   fns: [['World.act(action)', 'Runs an action, waits for the page to settle, observes.'],
+         ['World.truth_bookings()', 'Reads backend ground truth for checking outcomes.']]},
+  {path: 'tests/test_booking.py', depth: 1, isNew: true,
+   role: 'The rules alone: dependencies, validation, double booking, the race, reset, session isolation.',
+   uses: ['pytest'], fns: []},
+  {path: 'tests/test_server.py', depth: 1, isNew: true,
+   role: 'The API: session header, catalog, booking lifecycle, ground truth, reset.',
+   uses: ['pytest', 'httpx'], fns: []},
+  {path: 'tests/test_environment_browser.py', depth: 1, isNew: true,
+   role: 'The E0.1 acceptance table, run in real Chromium and checked both on the page and in the backend.',
+   uses: ['pytest', 'Playwright'], fns: []},
+  {path: 'tests/test_observer.py', depth: 1, isNew: true,
+   role: 'Each plane: states, hidden steps, parent links, boxes, moving errors, overlays, scrolling, culling, temporal reset, re-rendered ids.',
+   uses: ['pytest', 'Playwright'], fns: []},
+  {path: 'tests/test_delta.py', depth: 1, isNew: true,
+   role: 'Delta: added and removed elements, changed fields, matching across re-renders.',
+   uses: ['pytest', 'Playwright'], fns: []},
+  {path: 'docs/', dir: true},
+  {path: 'docs/BW0-spec.md', depth: 1, isNew: true,
+   role: 'The locked v0 plan: what is reused, what is designed from first principles, gates and kill criteria.',
+   uses: [], fns: []},
+  {path: '.pylintrc', isNew: true,
+   role: 'Lint settings following the Google Python Style Guide (80 columns, 4-space indent).',
+   uses: ['pylint'], fns: []},
+  {path: 'pytest.ini', isNew: true, role: 'Lets plain "pytest" find the tests and the package.',
+   uses: ['pytest'], fns: []},
+  {path: 'requirements.txt', role: 'Pinned dependencies: playwright, starlette, uvicorn, httpx, pytest, kaggle.',
+   uses: [], fns: []},
+];
+
+const LIBS = [
+  ['Playwright 1.63', 'Drives real Chromium and opens a DevTools Protocol session to it.'],
+  ['Chrome DevTools Protocol', 'Accessibility.getFullAXTree (semantic) · DOMSnapshot.captureSnapshot (geometry, paint order, fixed/sticky) · Page.getLayoutMetrics (viewport, scroll) · DOM.getNodeForLocation (hit test) · Network and Page events (temporal).'],
+  ['Starlette + Uvicorn', 'The booking server and this viewer\'s server.'],
+  ['pytest + httpx', 'Tests: rules, API, browser acceptance, observer, delta.'],
+  ['Python standard library', 'dataclasses for immutable records, threading for safe sharing, re and datetime for rules.'],
+];
+
+const PLANES = ['semantic', 'geometry', 'motion', 'temporal'];
+const STATE_NAMES = ['checked', 'disabled', 'expanded', 'focused', 'invalid',
+                     'readonly', 'required', 'selected'];
+const INTERACTIVE = new Set(['button', 'checkbox', 'combobox', 'link',
+  'option', 'radio', 'textbox', 'searchbox', 'listbox', 'switch', 'tab']);
+const $ = (id) => document.getElementById(id);
+
+let frames = [];
+let current = -1;
+let following = true;
+const live = !$('wam-recorded').textContent.trim();
+
+function esc(text) {
+  return String(text ?? '').replace(/[&<>"]/g, (c) => (
+    {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+}
+
+function planesOn() {
+  return new Set(PLANES.filter((p) => $(`pl-${p}`).checked));
+}
+
+function keyOf(e) {
+  return e.match_key || `${e.role}:${e.name}`;
+}
+
+function changedKeys(frame) {
+  const keys = new Set();
+  if (!frame.delta) return keys;
+  for (const item of [...frame.delta.added, ...frame.delta.changed]) {
+    keys.add(item.key);
+  }
+  return keys;
+}
+
+function renderTimeline() {
+  $('timeline').innerHTML = frames.map((f, i) => `
+    <li tabindex="0" data-i="${i}" aria-current="${i === current}">
+      <span class="n">${String(i).padStart(2, '0')}</span>
+      <span>${esc(f.label)}</span></li>`).join('');
+  const active = $('timeline').querySelector('[aria-current="true"]');
+  if (active) active.scrollIntoView({block: 'nearest'});
+  $('prev').disabled = current <= 0;
+  $('next').disabled = current >= frames.length - 1;
+  $('follow').hidden = !live || following;
+}
+
+const CONTAINERS = new Set(['form', 'group', 'banner', 'radiogroup',
+                            'navigation', 'dialog']);
+
+function viewBoxFor(obs, m) {
+  // Zoom to the content: the union of element boxes, ignoring full-width
+  // bands such as the sticky header so they do not force a full-page view.
+  const fullWidth = Math.max(m.content_width, m.viewport_width);
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const e of obs.elements) {
+    if (!e.box || e.box.width <= 0 || e.box.width >= 0.9 * fullWidth) continue;
+    x0 = Math.min(x0, e.box.x); y0 = Math.min(y0, e.box.y);
+    x1 = Math.max(x1, e.box.x + e.box.width);
+    y1 = Math.max(y1, e.box.y + e.box.height);
+  }
+  if (!isFinite(x0)) return [0, 0, fullWidth, m.viewport_height];
+  const pad = 24;
+  return [x0 - pad, 0, x1 - x0 + 2 * pad, y1 + pad];
+}
+
+function renderCanvas(frame, planes) {
+  const obs = frame.observation;
+  if (!planes.has('geometry')) {
+    $('canvas').innerHTML = '<p class="empty">Geometry plane off: the model ' +
+        'would not know where anything is, so there is nothing to draw.</p>';
+    return;
+  }
+  const m = obs.motion || {viewport_width: 1280, viewport_height: 800,
+                           scroll_x: 0, scroll_y: 0, content_width: 1280,
+                           content_height: 800};
+  const [vx, vy, vw, vh] = viewBoxFor(obs, m);
+  const font = Math.max(10, vw / 48);
+  const changed = changedKeys(frame);
+  const parts = [];
+  for (const e of obs.elements) {
+    if (!e.box || e.box.width <= 0 || e.box.height <= 0) continue;
+    const isAlert = e.role === 'alert' || (e.states && e.states.invalid);
+    const isChanged = changed.has(keyOf(e));
+    const container = CONTAINERS.has(e.role);
+    let stroke = INTERACTIVE.has(e.role) ? 'var(--accent)' : 'var(--muted)';
+    let fill = 'transparent';
+    if (isAlert) { stroke = 'var(--bad)'; fill = container ? fill : 'var(--bad-soft)'; }
+    if (isChanged) { stroke = 'var(--change)'; fill = container ? fill : 'var(--change-soft)'; }
+    const dash = planes.has('motion') && e.pinned ? ' stroke-dasharray="8 5"' : '';
+    const {x, y, width: w, height: h} = e.box;
+    parts.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="2" ` +
+        `style="fill:${fill};stroke:${stroke}" ` +
+        `stroke-width="${isChanged && !container ? 2.5 : 1.2}"${dash}/>`);
+    const label = planes.has('semantic') ? `${e.role} ${e.name}` : '';
+    const room = Math.floor((Math.min(w, vx + vw - x) - 6) / (font * 0.6));
+    if (label && h >= font * 1.1 && room >= 3 && !container) {
+      parts.push(`<text x="${x + 4}" y="${y + Math.min(h - 3, font + 2)}" ` +
+          `font-size="${font}" font-family="IBM Plex Mono, monospace" ` +
+          `style="fill:var(--ink)">${esc(label.slice(0, room))}</text>`);
+    }
+  }
+  if (planes.has('motion')) {
+    parts.push(`<rect x="${m.scroll_x + 2}" y="${m.scroll_y + 2}" ` +
+        `width="${m.viewport_width - 4}" height="${m.viewport_height - 4}" ` +
+        `style="fill:none;stroke:var(--muted)" stroke-width="2" stroke-dasharray="14 8"/>`);
+  }
+  $('canvas').innerHTML = `<svg viewBox="${vx} ${vy} ${vw} ${vh}" role="img" ` +
+      `aria-label="Wireframe drawn from observation geometry">${parts.join('')}</svg>`;
+}
+
+function elementLine(e, planes) {
+  const parts = [`[${e.node_id}]`];
+  if (planes.has('semantic')) {
+    parts.push(`${e.role} "${e.name}"`);
+    if (e.value !== null && e.value !== undefined) parts.push(`value="${e.value}"`);
+    const flags = STATE_NAMES.filter((s) => e.states && e.states[s]);
+    if (flags.length) parts.push(`{${flags.join(',')}}`);
+  }
+  if (planes.has('geometry') && e.box) {
+    const b = e.box;
+    parts.push(`@${Math.round(b.x)},${Math.round(b.y)} ${Math.round(b.width)}x${Math.round(b.height)}`);
+    if (!e.in_viewport) parts.push('offscreen');
+    if (e.visible === false) parts.push('invisible');
+    if (e.obstructed) parts.push('obstructed');
+  }
+  if (planes.has('motion') && e.pinned) parts.push('pinned');
+  return parts.join(' ');
+}
+
+function renderText(frame, planes) {
+  const obs = frame.observation;
+  const lines = obs.elements.map((e) => elementLine(e, planes));
+  if (planes.has('motion') && obs.motion) {
+    const m = obs.motion;
+    lines.push(`MOTION viewport=${m.viewport_width}x${m.viewport_height} ` +
+        `scroll=${m.scroll_x},${m.scroll_y} pinned=${m.pinned_count} layers=${m.stacking_contexts}`);
+  }
+  if (planes.has('temporal') && obs.temporal) {
+    const t = obs.temporal;
+    lines.push(`TEMPORAL mutations=${t.mutations} quiet_ms=${Math.round(t.ms_since_mutation)} ` +
+        `navigations=${t.navigations} requests=${t.requests_started} ` +
+        `pending=${t.pending_requests} settled=${t.settled}`);
+  }
+  $('obs-text').textContent = lines.join('\n');
+}
+
+function fmt(value) {
+  if (value === null || value === undefined) return '—';
+  if (Array.isArray(value)) return value.join(', ');
+  return String(value);
+}
+
+function renderDelta(frame) {
+  const d = frame.delta;
+  if (!d) {
+    $('delta').innerHTML = '<li class="muted">First frame: nothing to compare yet.</li>';
+    return;
+  }
+  const items = [];
+  for (const a of d.added) {
+    items.push(`<li class="added"><span class="tag">added</span>${esc(a.role)} "${esc(a.name)}"</li>`);
+  }
+  for (const r of d.removed) {
+    items.push(`<li class="removed"><span class="tag">removed</span>${esc(r.role)} "${esc(r.name)}"</li>`);
+  }
+  for (const c of d.changed) {
+    const fields = Object.entries(c.fields).map(([k, [o, n]]) =>
+        `<br><span class="mono">${esc(k)}: ${esc(fmt(o))} → ${esc(fmt(n))}</span>`).join('');
+    items.push(`<li class="changed"><span class="tag">changed</span>${esc(c.role)} "${esc(c.name)}"${fields}</li>`);
+  }
+  $('delta').innerHTML = items.length ? items.join('') :
+      '<li class="muted">Nothing visible changed.</li>';
+}
+
+function renderSemantic(frame, planes) {
+  if (!planes.has('semantic')) {
+    $('semantic').innerHTML = '<p class="plane-off">Semantic plane off: the ' +
+        'model would not know what anything is (no roles, names or states).</p>';
+    return;
+  }
+  const rows = frame.observation.elements
+      .filter((e) => e.role !== 'option')
+      .map((e) => {
+        const flags = STATE_NAMES.filter((s) => e.states && e.states[s])
+            .map((s) => `<span class="flag ${s}">${s}</span>`).join('');
+        return `<tr><td class="mono">${esc(e.role)}</td><td>${esc(e.name)}` +
+            `${e.value != null ? `<br><span class="muted mono">= ${esc(e.value)}</span>` : ''}` +
+            `</td><td>${flags}</td></tr>`;
+      });
+  $('semantic').innerHTML = `<div class="table-wrap"><table><thead><tr>` +
+      `<th>Role</th><th>Name / value</th><th>States</th></tr></thead>` +
+      `<tbody>${rows.join('')}</tbody></table></div>` +
+      `<p class="muted" style="font-size:.75rem;margin:6px 0 0">Dropdown options hidden here; they are in the text view.</p>`;
+}
+
+function renderMotionTemporal(frame, planes) {
+  const obs = frame.observation;
+  const parts = [];
+  if (planes.has('motion') && obs.motion) {
+    const m = obs.motion;
+    parts.push(`<dl class="readout"><dt>Viewport</dt><dd>${m.viewport_width} × ${m.viewport_height}</dd>` +
+        `<dt>Scroll</dt><dd>${m.scroll_x}, ${m.scroll_y}</dd>` +
+        `<dt>Page size</dt><dd>${m.content_width} × ${m.content_height}</dd>` +
+        `<dt>Pinned elements</dt><dd>${m.pinned_count}</dd>` +
+        `<dt>Layers</dt><dd>${m.stacking_contexts}</dd></dl>`);
+  } else {
+    parts.push('<p class="plane-off">Motion plane off: no scroll, viewport or layer structure.</p>');
+  }
+  if (planes.has('temporal') && obs.temporal) {
+    const t = obs.temporal;
+    parts.push(`<dl class="readout"><dt>DOM mutations</dt><dd>${t.mutations}</dd>` +
+        `<dt>Quiet for</dt><dd>${Math.round(t.ms_since_mutation)} ms</dd>` +
+        `<dt>Requests started</dt><dd>${t.requests_started}</dd>` +
+        `<dt>Still in flight</dt><dd>${t.pending_requests}</dd>` +
+        `<dt>Navigations</dt><dd>${t.navigations}</dd>` +
+        `<dt>Settled</dt><dd>${t.settled === null ? 'not checked' : t.settled}</dd></dl>` +
+        `<p class="muted" style="font-size:.75rem;margin:6px 0 0">Counts cover the time since the previous frame. In training they belong to the after-state only.</p>`);
+  } else {
+    parts.push('<p class="plane-off">Temporal plane off: no change tracking.</p>');
+  }
+  $('motion-temporal').innerHTML = parts.join('');
+}
+
+function render() {
+  renderTimeline();
+  if (current < 0) return;
+  const frame = frames[current];
+  const planes = planesOn();
+  $('frame-label').textContent = frame.label;
+  $('frame-meta').textContent = `frame ${current} · ${frame.observation.elements.length} elements · observed in ${frame.observe_ms} ms`;
+  renderCanvas(frame, planes);
+  renderText(frame, planes);
+  renderDelta(frame);
+  renderSemantic(frame, planes);
+  renderMotionTemporal(frame, planes);
+}
+
+function select(i) {
+  current = Math.max(0, Math.min(frames.length - 1, i));
+  following = live && current === frames.length - 1;
+  render();
+}
+
+async function poll() {
+  try {
+    const response = await fetch(`/api/frames?after=${frames.length}`);
+    const fresh = await response.json();
+    if (fresh.length) {
+      frames.push(...fresh);
+      if (following || current < 0) current = frames.length - 1;
+      render();
+    }
+    $('mode-text').textContent = `Live · ${frames.length} frames`;
+  } catch (err) {
+    $('mode-text').textContent = 'Live · demo stopped';
+  }
+  setTimeout(poll, 500);
+}
+
+function renderTree(selected) {
+  const items = CODE_MAP.map((f) => {
+    const depth = f.depth || 0;
+    const name = f.path.replace(/\/$/, '').split('/').pop() + (f.dir ? '/' : '');
+    const pad = `padding-left:${depth * 16}px`;
+    if (f.dir) return `<div class="dir" style="${pad}">${esc(name)}</div>`;
+    return `<div style="${pad}"><button type="button" data-path="${esc(f.path)}" ` +
+        `aria-current="${f.path === selected}">${esc(name)}</button>` +
+        `${f.isNew ? '<span class="new">new</span>' : ''}</div>`;
+  });
+  $('tree').innerHTML = `<p class="eyebrow" style="font-family:var(--font-body)">Files</p>${items.join('')}`;
+}
+
+function renderFile(path) {
+  const f = CODE_MAP.find((x) => x.path === path);
+  renderTree(path);
+  const fns = f.fns.length ? `<div class="table-wrap"><table class="fn-table">` +
+      `<thead><tr><th>Function / class / route</th><th>What it does</th></tr></thead><tbody>` +
+      f.fns.map(([n, d]) => `<tr><td>${esc(n)}</td><td>${esc(d)}</td></tr>`).join('') +
+      `</tbody></table></div>` : '';
+  const uses = f.uses.length ? `<div class="chips">${f.uses.map((u) =>
+      `<span class="chip">${esc(u)}</span>`).join('')}</div>` : '';
+  $('file-detail').innerHTML = `<p class="eyebrow">${f.isNew ? 'Created' : 'Updated'}</p>` +
+      `<h2>${esc(f.path)}</h2><p class="role">${esc(f.role)}</p>${uses}${fns}`;
+}
+
+function setTab(name) {
+  for (const t of ['observer', 'code']) {
+    $(`tab-${t}`).setAttribute('aria-selected', String(t === name));
+    $(`view-${t}`).hidden = t !== name;
+  }
+}
+
+function init() {
+  $('libs').innerHTML = LIBS.map(([n, d]) => `<div><b>${esc(n)}</b><br>` +
+      `<span class="muted">${esc(d)}</span></div>`).join('');
+  renderFile('browser_world/observer.py');
+  $('tree').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button[data-path]');
+    if (btn) renderFile(btn.dataset.path);
+  });
+  $('tab-observer').addEventListener('click', () => setTab('observer'));
+  $('tab-code').addEventListener('click', () => setTab('code'));
+  $('timeline').addEventListener('click', (ev) => {
+    const li = ev.target.closest('li[data-i]');
+    if (li) select(Number(li.dataset.i));
+  });
+  $('timeline').addEventListener('keydown', (ev) => {
+    const li = ev.target.closest('li[data-i]');
+    if (li && (ev.key === 'Enter' || ev.key === ' ')) {
+      ev.preventDefault();
+      select(Number(li.dataset.i));
+    }
+  });
+  $('prev').addEventListener('click', () => select(current - 1));
+  $('next').addEventListener('click', () => select(current + 1));
+  $('follow').addEventListener('click', () => select(frames.length - 1));
+  document.addEventListener('keydown', (ev) => {
+    if (ev.target.matches('input, button')) return;
+    if (ev.key === 'ArrowRight') select(current + 1);
+    if (ev.key === 'ArrowLeft') select(current - 1);
+  });
+  for (const p of PLANES) $(`pl-${p}`).addEventListener('change', render);
+
+  if (live) {
+    poll();
+  } else {
+    frames = JSON.parse($('wam-recorded').textContent);
+    $('mode-text').textContent = `Recorded session · ${frames.length} frames`;
+    $('follow').hidden = true;
+    select(0);
+  }
+}
+
+init();
+</script>
