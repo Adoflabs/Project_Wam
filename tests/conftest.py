@@ -30,12 +30,11 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-@pytest.fixture(scope='session')
-def base_url() -> Iterator[str]:
-    """Runs the booking server with the default scenario in a thread."""
+def _serve(app) -> Iterator[str]:
+    """Runs an ASGI app in a thread; yields its URL and stops it after."""
     port = _free_port()
-    config = uvicorn.Config(server.create_app(booking.default_scenario()),
-                            host='127.0.0.1', port=port, log_level='warning')
+    config = uvicorn.Config(app, host='127.0.0.1', port=port,
+                            log_level='warning')
     uv_server = uvicorn.Server(config)
     thread = threading.Thread(target=uv_server.run, daemon=True)
     thread.start()
@@ -47,6 +46,28 @@ def base_url() -> Iterator[str]:
     yield f'http://127.0.0.1:{port}'
     uv_server.should_exit = True
     thread.join(timeout=_SERVER_START_TIMEOUT_S)
+
+
+@pytest.fixture(scope='session')
+def base_url() -> Iterator[str]:
+    """Runs the booking server with the default scenario in a thread."""
+    yield from _serve(server.create_app(booking.default_scenario()))
+
+
+@pytest.fixture(scope='session')
+def scenario_server() -> Iterator[tuple[str, dict[str, booking.Scenario]]]:
+    """Runs a booking server whose sessions get assigned scenarios.
+
+    Yields:
+      A tuple (url, assignments): put a scenario in `assignments` under a
+      session id before that session's page loads.
+    """
+    assignments: dict[str, booking.Scenario] = {}
+    app = server.create_app(
+        lambda session_id: assignments.get(session_id,
+                                           booking.default_scenario()))
+    for url in _serve(app):
+        yield url, assignments
 
 
 @pytest.fixture(scope='session')
@@ -178,5 +199,28 @@ def open_page(
         page.goto(f'{TEST_URL}{query}')
         watcher.wait_until_settled()
         return page, watcher
+
+    return factory
+
+
+@pytest.fixture
+def make_scenario_world(
+        new_page: Callable[..., sync_api.Page],
+        scenario_server: tuple[str, dict[str, booking.Scenario]]
+) -> Callable[..., World]:
+    """Returns a factory for worlds running a given scenario."""
+    url, assignments = scenario_server
+
+    def factory(scenario: booking.Scenario,
+                viewport_height: int = 800) -> World:
+        session_id = uuid.uuid4().hex
+        assignments[session_id] = scenario
+        page = new_page(viewport_height)
+        watcher = observer.attach(page)
+        page.goto(f'{url}/?session={session_id}')
+        page.wait_for_selector('body[data-ready=true]')
+        watcher.wait_until_settled()
+        watcher.observe()
+        return World(page, watcher, session_id, url)
 
     return factory

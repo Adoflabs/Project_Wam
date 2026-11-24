@@ -34,6 +34,7 @@ Typical usage example:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import dataclasses
 import enum
 import math
@@ -59,6 +60,7 @@ _ROLES_FOR_ACTION = {
 }
 ACTION_KINDS = frozenset(_ROLES_FOR_ACTION) | {SCROLL}
 _DROPDOWN_ROLE = 'combobox'
+_DROPDOWN_TAG = 'select'
 # Default distance offered by scroll affordances, as a share of the
 # viewport height.
 _SCROLL_FRACTION = 0.8
@@ -218,14 +220,16 @@ def _element_problem(element: observer.Element, kind: str,
 
 def _dropdown_of(observation: observer.Observation,
                  option: observer.Element) -> observer.Element | None:
-    """Returns the native dropdown an option belongs to, or None. Options
+    """Returns the native <select> an option belongs to, or None. Options
     inside an <optgroup> have the group as their parent, so the search
-    walks up the parent chain."""
+    walks up the parent chain. A custom widget with the combobox role is
+    not native and is refused, because the keyboard selection relies on
+    native behaviour."""
     by_id = {e.node_id: e for e in observation.elements}
     parent = by_id.get(option.parent_id) if option.parent_id else None
     while parent is not None:
         if parent.role == _DROPDOWN_ROLE:
-            return parent
+            return parent if parent.tag == _DROPDOWN_TAG else None
         parent = by_id.get(parent.parent_id) if parent.parent_id else None
     return None
 
@@ -311,17 +315,22 @@ class Executor:
     """
 
     def __init__(self, page: sync_api.Page, watcher: observer.Observer,
-                 speed: Speed = NORMAL_SPEED):
+                 speed: Speed = NORMAL_SPEED,
+                 on_move: Callable[[float, float], None] | None = None):
         """Creates an executor for `page`.
 
         Args:
           page: The page to act on.
           watcher: The observer attached to the same page.
           speed: Mouse and typing speed.
+          on_move: Optional callback given each new mouse position in
+            viewport coordinates, for demos that draw the pointer. It must
+            not change the page.
         """
         self._page = page
         self._watcher = watcher
         self._speed = speed
+        self._on_move = on_move
         self._used_observations: set[int] = set()
         self.pointer = (0.0, 0.0)
 
@@ -424,6 +433,8 @@ class Executor:
             point_x = start_x + (x - start_x) * fraction
             point_y = start_y + (y - start_y) * fraction
             self._page.mouse.move(point_x, point_y)
+            if self._on_move is not None:
+                self._on_move(point_x, point_y)
             points.append(PathPoint(point_x, point_y, _elapsed_ms(started)))
             if pause_ms:
                 self._page.wait_for_timeout(pause_ms)

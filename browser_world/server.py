@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import Callable
 import dataclasses
 import pathlib
 
@@ -62,6 +63,12 @@ async def _app_js(request: requests.Request) -> responses.Response:
     del request  # Unused.
     return responses.FileResponse(_STATIC_DIR / 'app.js',
                                   media_type='text/javascript')
+
+
+async def _presentation(request: requests.Request) -> responses.Response:
+    presentation = _session(request).scenario.presentation
+    return responses.JSONResponse({'layout': presentation.layout,
+                                   'text': dict(presentation.text)})
 
 
 async def _services(request: requests.Request) -> responses.Response:
@@ -143,11 +150,15 @@ async def _missing_session(request: requests.Request,
         {'error': f'Missing {SESSION_HEADER} header.'}, status_code=400)
 
 
-def create_app(scenario: booking.Scenario) -> applications.Starlette:
-    """Builds the ASGI app for one scenario.
+def create_app(
+        scenario: booking.Scenario | Callable[[str], booking.Scenario]
+) -> applications.Starlette:
+    """Builds the ASGI app.
 
     Args:
-      scenario: Scenario given to every session the app creates.
+      scenario: The scenario for every session, or a function from a
+        session id to its scenario. The page learns its scenario only
+        through the API, never through its URL.
 
     Returns:
       A Starlette application.
@@ -156,6 +167,7 @@ def create_app(scenario: booking.Scenario) -> applications.Starlette:
         routes=[
             routing.Route('/', _page),
             routing.Route('/static/app.js', _app_js),
+            routing.Route('/api/presentation', _presentation),
             routing.Route('/api/services', _services),
             routing.Route('/api/doctors', _doctors),
             routing.Route('/api/dates', _dates),

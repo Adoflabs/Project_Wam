@@ -17,6 +17,14 @@
       background: #1d3557; color: #fff; padding: 12px 24px;
     }
     main { max-width: 560px; margin: 24px auto; padding: 0 16px; }
+    /* The combined layout shows the appointment and details side by side. */
+    body.layout-combined main {
+      max-width: 1080px; display: grid; column-gap: 24px;
+      grid-template-columns: 1fr 1fr; align-items: start;
+    }
+    body.layout-combined main > :not(#step-appointment):not(#step-details) {
+      grid-column: 1 / -1;
+    }
     section { background: #fff; border-radius: 8px; padding: 16px 24px; }
     label { display: block; margin-top: 14px; font-weight: 600; }
     input[type=text], select, textarea {
@@ -85,6 +93,8 @@
            data-wam-key="error-slot" hidden></p>
 
         <div class="actions">
+          <button type="button" id="back-appointment"
+                  data-wam-key="back-appointment" hidden>Back</button>
           <button type="submit" data-wam-key="next-appointment">Next</button>
         </div>
       </form>

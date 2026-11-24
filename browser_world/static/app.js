@@ -1,24 +1,37 @@
-// Booking page behaviour. All rules live on the server; this file only
-// renders server responses and wires up the three-step wizard.
+// Booking page behaviour. All rules live on the server; this file renders
+// server responses and runs the steps in the order the scenario's layout
+// asks for, with the scenario's wording.
 'use strict';
 
 const SESSION =
     new URLSearchParams(window.location.search).get('session') || 'default';
-const STEPS = ['appointment', 'details', 'review', 'done'];
-const STEP_LABELS = {
-  appointment: 'Step 1 of 3',
-  details: 'Step 2 of 3',
-  review: 'Step 3 of 3',
-  done: 'Booking complete',
+// Each layout is a list of steps; each step shows one or more sections.
+const LAYOUTS = {
+  wizard: [['appointment'], ['details'], ['review']],
+  details_first: [['details'], ['appointment'], ['review']],
+  combined: [['appointment', 'details'], ['review']],
 };
+const SECTIONS = ['appointment', 'details', 'review', 'done'];
 const APPOINTMENT_FIELDS = ['service', 'doctor', 'date', 'slot'];
 const DETAIL_FIELDS = ['name', 'email', 'phone', 'consent'];
+const FIELDS_OF = {appointment: APPOINTMENT_FIELDS, details: DETAIL_FIELDS};
+const BACK_BUTTON_OF = {appointment: 'back-appointment',
+                        details: 'back-details'};
 
 const $ = (id) => document.getElementById(id);
+const byKey = (key) => document.querySelector(`[data-wam-key="${key}"]`);
+
+let text = {};
+let steps = LAYOUTS.wizard;
+let current = 0;
 
 // Incremented on every slot request so a slow, stale response can never
 // overwrite a newer one. This keeps the page deterministic.
 let slotRequestId = 0;
+
+function format(template, values) {
+  return template.replace(/\{(\w+)\}/g, (_, key) => String(values[key]));
+}
 
 async function api(path, body) {
   const options = {headers: {'X-WAM-Session': SESSION}};
@@ -29,6 +42,30 @@ async function api(path, body) {
   }
   const response = await fetch(path, options);
   return {status: response.status, data: await response.json()};
+}
+
+function applyText() {
+  document.title = text.title;
+  document.querySelector('h1').textContent = text.title;
+  document.querySelector('header').textContent = text.clinic;
+  for (const section of SECTIONS) {
+    $(`step-${section}`).querySelector('h2').textContent =
+        text[`h_${section}`];
+  }
+  for (const field of ['service', 'doctor', 'date', 'name', 'email', 'phone',
+                       'notes', 'consent']) {
+    document.querySelector(`label[for="${field}"]`).textContent = text[field];
+  }
+  $('slot-group').querySelector('legend').textContent = text.time;
+  for (const key of ['next-appointment', 'next-details']) {
+    byKey(key).textContent = text.next;
+  }
+  for (const key of ['back-appointment', 'back-details', 'back-review']) {
+    byKey(key).textContent = text.back;
+  }
+  byKey('confirm').textContent = text.confirm;
+  byKey('choose-another').textContent = text.choose_another;
+  byKey('book-another').textContent = text.book_another;
 }
 
 function fillSelect(select, placeholder, items) {
@@ -70,17 +107,17 @@ function renderSlots(slots) {
   }
   const free = slots.filter((s) => s.available).length;
   $('slot-status').textContent =
-      free ? `${free} times available.` : 'No times available on this date.';
+      free ? format(text.times_free, {n: free}) : text.times_none;
 }
 
 async function loadSlots() {
   const doctor = $('doctor').value;
   const date = $('date').value;
   if (!doctor || !date) {
-    clearSlots('Choose a date to see times.');
+    clearSlots(text.times_prompt);
     return;
   }
-  clearSlots('Loading times…');
+  clearSlots(text.times_loading);
   const requestId = slotRequestId;
   const query = new URLSearchParams({doctor, date});
   const {data} = await api(`/api/slots?${query}`);
@@ -116,12 +153,32 @@ function showErrors(fields, errors) {
   }
 }
 
-function showStep(step) {
-  for (const name of STEPS) {
-    $(`step-${name}`).hidden = name !== step;
+function showStep(index, focus = true) {
+  current = index;
+  const shown = steps[index];
+  for (const section of SECTIONS) {
+    $(`step-${section}`).hidden = !shown.includes(section);
   }
-  $('step-indicator').textContent = STEP_LABELS[step];
-  $(`step-${step}`).querySelector('h2').focus();
+  // Only the last section of a later step offers Back.
+  for (const [section, id] of Object.entries(BACK_BUTTON_OF)) {
+    $(id).hidden = index === 0 || section !== shown[shown.length - 1];
+  }
+  // A combined step is submitted once, from its last section.
+  byKey('next-appointment').hidden =
+      shown.includes('details') && shown.includes('appointment');
+  $('step-indicator').textContent =
+      format(text.step, {i: index + 1, n: steps.length});
+  if (focus) {
+    $(`step-${shown[0]}`).querySelector('h2').focus();
+  }
+}
+
+function showDone() {
+  for (const section of SECTIONS) {
+    $(`step-${section}`).hidden = section !== 'done';
+  }
+  $('step-indicator').textContent = text.done;
+  $('step-done').querySelector('h2').focus();
 }
 
 function appointmentValues() {
@@ -142,6 +199,8 @@ function detailValues() {
   };
 }
 
+const VALUES_OF = {appointment: appointmentValues, details: detailValues};
+
 function optionText(id) {
   const select = $(id);
   return select.options[select.selectedIndex].text;
@@ -149,13 +208,13 @@ function optionText(id) {
 
 function renderReview() {
   const rows = [
-    ['Service', optionText('service')],
-    ['Doctor', optionText('doctor')],
-    ['Date', optionText('date')],
-    ['Time', selectedSlot()],
-    ['Name', $('name').value.trim()],
-    ['Email', $('email').value.trim()],
-    ['Phone', $('phone').value.trim()],
+    [text.service, optionText('service')],
+    [text.doctor, optionText('doctor')],
+    [text.date, optionText('date')],
+    [text.time, selectedSlot()],
+    [text.name, $('name').value.trim()],
+    [text.email, $('email').value.trim()],
+    [text.phone, $('phone').value.trim()],
   ];
   $('review-list').replaceChildren(...rows.map(([label, value]) => {
     const item = document.createElement('li');
@@ -173,28 +232,28 @@ function clearConfirmError() {
 
 async function onServiceChange() {
   clearErrors(APPOINTMENT_FIELDS);
-  clearSelect('doctor', 'Select a doctor');
-  clearSelect('date', 'Select a date');
-  clearSlots('Choose a date to see times.');
+  clearSelect('doctor', text.pick_doctor);
+  clearSelect('date', text.pick_date);
+  clearSlots(text.times_prompt);
   const service = $('service').value;
   if (!service) {
     return;
   }
   const {data} = await api(`/api/doctors?service=${service}`);
-  fillSelect($('doctor'), 'Select a doctor',
+  fillSelect($('doctor'), text.pick_doctor,
              data.map((d) => ({label: d.name, value: d.key})));
 }
 
 async function onDoctorChange() {
   clearErrors(['doctor', 'date', 'slot']);
-  clearSelect('date', 'Select a date');
-  clearSlots('Choose a date to see times.');
+  clearSelect('date', text.pick_date);
+  clearSlots(text.times_prompt);
   const doctor = $('doctor').value;
   if (!doctor) {
     return;
   }
   const {data} = await api(`/api/dates?doctor=${doctor}`);
-  fillSelect($('date'), 'Select a date',
+  fillSelect($('date'), text.pick_date,
              data.map((d) => ({label: d.label, value: d.iso})));
 }
 
@@ -203,24 +262,23 @@ async function onDateChange() {
   await loadSlots();
 }
 
-async function onAppointmentSubmit(event) {
+// Validates every section of the current step on the server, then moves on.
+async function onSubmit(event) {
   event.preventDefault();
-  const {data} = await api('/api/validate/appointment', appointmentValues());
-  showErrors(APPOINTMENT_FIELDS, data.errors);
-  if (Object.keys(data.errors).length === 0) {
-    showStep('details');
+  let valid = true;
+  for (const section of steps[current]) {
+    const {data} = await api(`/api/validate/${section}`, VALUES_OF[section]());
+    showErrors(FIELDS_OF[section], data.errors);
+    valid = valid && Object.keys(data.errors).length === 0;
   }
-}
-
-async function onDetailsSubmit(event) {
-  event.preventDefault();
-  const {data} = await api('/api/validate/details', detailValues());
-  showErrors(DETAIL_FIELDS, data.errors);
-  if (Object.keys(data.errors).length === 0) {
+  if (!valid) {
+    return;
+  }
+  if (steps[current + 1].includes('review')) {
     clearConfirmError();
     renderReview();
-    showStep('review');
   }
+  showStep(current + 1);
 }
 
 async function onConfirm() {
@@ -228,8 +286,8 @@ async function onConfirm() {
   const {status, data} =
       await api('/api/bookings', {...appointmentValues(), ...detailValues()});
   if (status === 201) {
-    $('reference').textContent = `Your reference is ${data.reference}.`;
-    showStep('done');
+    $('reference').textContent = format(text.reference, {ref: data.reference});
+    showDone();
     return;
   }
   const message = status === 409 ?
@@ -244,7 +302,7 @@ async function onConfirm() {
 
 async function onChooseAnother() {
   clearConfirmError();
-  showStep('appointment');
+  showStep(steps.findIndex((step) => step.includes('appointment')));
   await loadSlots();
 }
 
@@ -252,27 +310,37 @@ async function onBookAnother() {
   $('form-appointment').reset();
   $('form-details').reset();
   clearErrors([...APPOINTMENT_FIELDS, ...DETAIL_FIELDS]);
-  clearSelect('doctor', 'Select a doctor');
-  clearSelect('date', 'Select a date');
-  clearSlots('Choose a date to see times.');
-  showStep('appointment');
+  clearSelect('doctor', text.pick_doctor);
+  clearSelect('date', text.pick_date);
+  clearSlots(text.times_prompt);
+  showStep(0);
 }
 
 async function init() {
+  const presentation = (await api('/api/presentation')).data;
+  text = presentation.text;
+  steps = LAYOUTS[presentation.layout];
+  document.body.classList.add(`layout-${presentation.layout}`);
+  applyText();
   const {data} = await api('/api/services');
-  fillSelect($('service'), 'Select a service',
+  fillSelect($('service'), text.pick_service,
              data.map((s) => ({label: s.name, value: s.key})));
+  clearSelect('doctor', text.pick_doctor);
+  clearSelect('date', text.pick_date);
+  clearSlots(text.times_prompt);
   $('service').addEventListener('change', onServiceChange);
   $('doctor').addEventListener('change', onDoctorChange);
   $('date').addEventListener('change', onDateChange);
   $('slot-list').addEventListener('change', () => clearErrors(['slot']));
-  $('form-appointment').addEventListener('submit', onAppointmentSubmit);
-  $('form-details').addEventListener('submit', onDetailsSubmit);
-  $('back-details').addEventListener('click', () => showStep('appointment'));
-  $('back-review').addEventListener('click', () => showStep('details'));
+  $('form-appointment').addEventListener('submit', onSubmit);
+  $('form-details').addEventListener('submit', onSubmit);
+  for (const id of ['back-appointment', 'back-details', 'back-review']) {
+    $(id).addEventListener('click', () => showStep(current - 1));
+  }
   $('confirm').addEventListener('click', onConfirm);
   $('choose-another').addEventListener('click', onChooseAnother);
   $('book-another').addEventListener('click', onBookAnother);
+  showStep(0, false);
   document.body.dataset.ready = 'true';
 }
 

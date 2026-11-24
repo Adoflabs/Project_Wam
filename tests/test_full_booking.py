@@ -11,6 +11,7 @@ is off-screen, it scrolls. No selectors, no direct state changes.
 
 from browser_world import executor
 from browser_world import recorder
+from tests import run_checks
 
 # The goal, as (kind, accessible name, text or desired checked state).
 BOOKING_PLAN = (
@@ -76,12 +77,7 @@ def test_complete_booking_is_one_continuous_recorded_run(make_world,
                  executor.CLICK):
         assert kind in kinds
 
-    saved = recorder.read_jsonl(rec.transitions_path)
-    assert len(saved) == len(transitions)
-    assert len({r['run_id'] for r in saved}) == 1
-    assert [r['step'] for r in saved] == list(range(len(saved)))
-    assert all(not recorder.sequence_problems(r) for r in saved), [
-        recorder.sequence_problems(r) for r in saved]
+    run_checks.assert_one_continuous_run(tmp_path, len(transitions))
     for previous, current in zip(transitions, transitions[1:]):
         assert not recorder.differences(recorder.canonical(previous.after),
                                         recorder.canonical(current.before))

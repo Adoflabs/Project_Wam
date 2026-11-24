@@ -193,7 +193,8 @@ def test_model_input_cannot_leak_privileged_data(next_transition):
     for forbidden in ('node_id', 'match_key', 'target', 'truth', 'after',
                       'events', 'result', 'artifacts', 'temporal',
                       'sequence', 'page_epoch', 'page_version',
-                      'state_digest', 'episode_id', 'run_id', 'continuity'):
+                      'state_digest', 'episode_id', 'run_id', 'continuity',
+                      'scenario', 'tag', 'consistent'):
         assert forbidden not in keys, forbidden
     text = json.dumps(projected)
     match_keys = {e.match_key for e in t.before.elements if e.match_key}

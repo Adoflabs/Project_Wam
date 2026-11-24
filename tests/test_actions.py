@@ -188,7 +188,7 @@ def test_scroll_is_recorded_without_an_element_target(make_world, tmp_path):
     assert saved['target'] is None and saved['events_status']['complete']
 
 
-def test_failed_write_does_not_advance_the_run(world, tmp_path, monkeypatch):
+def test_failed_write_invalidates_the_run(world, tmp_path, monkeypatch):
     hand = executor.Executor(world.page, world.watcher, executor.FAST_SPEED)
     rec = recorder.Recorder(world.page, world.watcher, hand, tmp_path)
     run_id = rec.new_run('ep-write', 'start')
@@ -206,9 +206,15 @@ def test_failed_write_does_not_advance_the_run(world, tmp_path, monkeypatch):
     monkeypatch.setattr(rec, '_append', original)
     world.watcher.wait_until_settled()
     before = world.watcher.observe()
-    t = rec.record_step(run_id, before,
+    with pytest.raises(recorder.InvalidRunError):  # The click happened.
+        rec.record_step(run_id, before,
                         _offer(before, executor.CLICK, 'Next').action())
-    assert t.step == 0 and t.continuity.previous_step is None
+    fresh = rec.new_run('ep-write', 'reset')
+    t = rec.record_step(fresh, before,
+                        _offer(before, executor.CLICK, 'Next').action())
+    assert t.step == 0 and t.run_origin == 'reset'
+    assert not (tmp_path / recorder.TRANSITIONS_FILE).read_text().count(
+        run_id)  # Nothing from the invalid run was written.
 
 
 def test_capture_is_marked_inconsistent_when_the_page_keeps_changing(
@@ -264,3 +270,50 @@ def test_observation_round_trip_keeps_consistency(world):
     observation = world.watcher.observe()
     rebuilt = observer.observation_from_dict(observation.to_dict())
     assert rebuilt == observation
+
+
+# ARIA 1.0 combobox pattern: Chromium exposes the options under the custom
+# combobox (option -> listbox -> combobox), so only the tag shows it is not
+# a native <select>.
+_ARIA_COMBOBOX_PAGE = """<!doctype html>
+<body>
+  <div role="combobox" aria-expanded="true" aria-owns="lb"
+       aria-label="Fake dropdown">
+    <input aria-label="Type to filter">
+    <div id="lb" role="listbox">
+      <div role="option" tabindex="-1">One</div>
+      <div role="option" tabindex="-1">Two</div>
+    </div>
+  </div>
+</body>"""
+
+
+def test_aria_combobox_is_not_treated_as_native(open_page):
+    page, watcher = open_page(_ARIA_COMBOBOX_PAGE)
+    hand = executor.Executor(page, watcher, executor.FAST_SPEED)
+    observation = watcher.observe()
+    fake = next(e for e in observation.elements if e.role == 'combobox')
+    assert fake.tag == 'div'
+    assert not [a for a in executor.available_actions(observation)
+                if a.kind == executor.SELECT]
+    one = next(e for e in observation.elements if e.name == 'One')
+    assert hand.execute(observation, executor.Action(
+        executor.SELECT, one.node_id)).refusal is (
+            executor.Refusal.UNSUPPORTED_ROLE)
+
+
+def test_native_select_records_its_tag(world):
+    assert world.watcher.observe().find('service').tag == 'select'
+
+
+def test_missing_page_script_is_never_consistent(new_page):
+    page = new_page()
+    page.set_content('<button>Plain</button>')
+    watcher = observer.attach(page)  # Too late: the script never ran here.
+    assert page.evaluate('typeof window.__wamTemporal') == 'undefined'
+    assert not watcher.observe().consistent
+
+
+def test_older_schemas_stay_out_of_training():
+    assert recorder.sequence_problems({'schema_version': 2}) == [
+        'schema 2 lacks capture-consistency and native-control fields']

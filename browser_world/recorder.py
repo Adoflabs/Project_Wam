@@ -41,7 +41,16 @@ from playwright import sync_api
 from browser_world import executor
 from browser_world import observer
 
-SCHEMA_VERSION = 2
+# Record layout history:
+#   1  before/action/after, no run identity (diagnostic only).
+#   2  adds runs, continuity, event status, page_version, state_digest.
+#   3  adds observation `consistent`, element `tag`, the action's
+#      `checked` and `scroll_y` fields (select, check and scroll), and
+#      optional `scenario` metadata.
+# Older records stay as raw evidence; only MIN_TRAINING_SCHEMA_VERSION and
+# later may enter training.
+SCHEMA_VERSION = 3
+MIN_TRAINING_SCHEMA_VERSION = 3
 TRANSITIONS_FILE = 'transitions.jsonl'
 REFUSALS_FILE = 'refusals.jsonl'
 # Query parameters that name a session rather than application state. Only
@@ -110,6 +119,8 @@ class Transition:
       settled: Whether the page settled before `after` was observed.
       after: The observation once the page settled (or timed out).
       continuity: How this step joins the previous step of its run.
+      scenario: Metadata about the hidden scenario (id, family, split,
+        seed), for splitting data; never model input. None if unknown.
       truth: Backend ground truth `{'before': ..., 'after': ...}`, or None.
       artifacts: Paths of optional screenshot and HTML captures, relative
         to the raw directory. Never model input.
@@ -130,6 +141,7 @@ class Transition:
     settled: bool
     after: observer.Observation
     continuity: Continuity
+    scenario: Mapping[str, Any] | None
     truth: Mapping[str, Any] | None
     artifacts: Mapping[str, str]
 
@@ -153,6 +165,8 @@ class Transition:
             'settled': self.settled,
             'after': self.after.to_dict(),
             'continuity': dataclasses.asdict(self.continuity),
+            'scenario': (dict(self.scenario) if self.scenario is not None
+                         else None),
             'truth': self.truth,
             'artifacts': dict(self.artifacts),
         }
@@ -168,6 +182,9 @@ class _Run:
       next_step: The step number the next recorded transition gets.
       last_after: The previous step's after-observation, or None.
       last_truth: Backend truth after the previous step.
+      invalid: Set when an executed action could not be recorded; the run
+        then refuses further steps.
+      scenario: Scenario metadata copied into every record of the run.
     """
 
     episode_id: str
@@ -175,6 +192,13 @@ class _Run:
     next_step: int = 0
     last_after: observer.Observation | None = None
     last_truth: Any = None
+    invalid: bool = False
+    scenario: Mapping[str, Any] | None = None
+
+
+class InvalidRunError(Exception):
+    """The run can no longer be recorded: an action reached the browser
+    but its record could not be completed. Start a new run."""
 
 
 class Recorder:
@@ -214,7 +238,8 @@ class Recorder:
         """The diagnostic JSONL file of refused actions."""
         return self._raw_dir / REFUSALS_FILE
 
-    def new_run(self, episode_id: str, origin: str) -> str:
+    def new_run(self, episode_id: str, origin: str,
+                scenario: Mapping[str, Any] | None = None) -> str:
         """Starts a continuous run and returns its id.
 
         Call it at the start of every episode and again after anything that
@@ -223,12 +248,14 @@ class Recorder:
         Args:
           episode_id: The episode the run belongs to.
           origin: How the run begins, such as 'start', 'reset' or 'branch'.
+          scenario: Optional metadata about the hidden scenario, such as
+            its id, family, split and seed. Recorded, never model input.
 
         Returns:
           A new, unique run id.
         """
         run_id = f'{episode_id}/run-{uuid.uuid4().hex[:8]}'
-        self._runs[run_id] = _Run(episode_id, origin)
+        self._runs[run_id] = _Run(episode_id, origin, scenario=scenario)
         return run_id
 
     def record_step(self, run_id: str, before: observer.Observation,
@@ -248,48 +275,73 @@ class Recorder:
 
         Raises:
           ValueError: `run_id` was not started by this recorder.
+          InvalidRunError: An earlier step of this run reached the browser
+            but was not recorded.
         """
         run = self._runs.get(run_id)
         if run is None:
             raise ValueError(f'Unknown run {run_id!r}; call new_run() first.')
-        step = run.next_step
-        target = _target_of(before, action)
-        recorded_at_ms = time.time() * 1000
-        truth_before = self._truth()
-        continuity = _continuity(run, before, truth_before)
-        artifacts = self._capture(run_id, step, 'before')
+        if run.invalid:
+            raise InvalidRunError(
+                f'Run {run_id!r} lost an executed action; start a new run.')
+        context = _Step(
+            run_id=run_id,
+            run=run,
+            number=run.next_step,
+            before=before,
+            action=action,
+            target=_target_of(before, action),
+            recorded_at_ms=time.time() * 1000,
+            truth_before=self._truth(),
+        )
+        artifacts = self._capture(run_id, context.number, 'before')
+        # Isolation point: once the action may have reached the browser, any
+        # failure leaves a change without a record, so the run is
+        # invalidated and the error re-raised.
+        try:
+            return self._execute_and_record(context, artifacts)
+        except Exception:
+            run.invalid = True
+            raise
+
+    def _execute_and_record(self, step: '_Step', artifacts: dict[str, str]
+                            ) -> Transition | executor.ActionResult:
+        """Executes the step's action and appends its record (or the
+        refusal), then moves the run forward."""
+        run = step.run
+        continuity = _continuity(run, step.before, step.truth_before)
         self._watcher.start_events()
         window_start = time.monotonic()
-        result = self._hand.execute(before, action)
+        result = self._hand.execute(step.before, step.action)
         if not result.executed:
             self._watcher.take_events()  # Close the window; nothing ran.
-            self._append(self.refusals_path, _refusal_record(
-                run_id, run.episode_id, step, recorded_at_ms, before, result))
+            self._append(self.refusals_path, _refusal_record(step, result))
             return result
         settled = self._watcher.wait_until_settled()
         after = self._watcher.observe()
         events = self._watcher.take_events()
         window_ms = round((time.monotonic() - window_start) * 1000, 2)
-        artifacts.update(self._capture(run_id, step, 'after'))
+        artifacts.update(self._capture(step.run_id, step.number, 'after'))
         truth = None
         if self._truth_fn is not None:
-            truth = {'before': truth_before, 'after': self._truth()}
+            truth = {'before': step.truth_before, 'after': self._truth()}
         transition = Transition(
             schema_version=SCHEMA_VERSION,
-            run_id=run_id,
+            run_id=step.run_id,
             run_origin=run.origin,
             episode_id=run.episode_id,
-            step=step,
-            recorded_at_ms=recorded_at_ms,
-            before=before,
-            action=action,
-            target=target,
+            step=step.number,
+            recorded_at_ms=step.recorded_at_ms,
+            before=step.before,
+            action=step.action,
+            target=step.target,
             result=result,
             events=events,
             window_ms=window_ms,
             settled=settled,
             after=after,
             continuity=continuity,
+            scenario=run.scenario,
             truth=truth,
             artifacts=artifacts,
         )
@@ -371,17 +423,41 @@ def _continuity(run: _Run, before: observer.Observation,
                       differences=tuple(found))
 
 
-def _refusal_record(run_id: str, episode_id: str, step: int,
-                    recorded_at_ms: float, before: observer.Observation,
+@dataclasses.dataclass(frozen=True)
+class _Step:
+    """Everything known about a step before its action runs.
+
+    Attributes:
+      run_id: The run the step belongs to.
+      run: That run's recorder-side state.
+      number: The step number it will get if recorded.
+      before: The observation the decider acted on.
+      action: The decided action.
+      target: The action's target in `before`, or None.
+      recorded_at_ms: Wall-clock start time.
+      truth_before: Backend truth before the action.
+    """
+
+    run_id: str
+    run: _Run
+    number: int
+    before: observer.Observation
+    action: executor.Action
+    target: Target | None
+    recorded_at_ms: float
+    truth_before: Any
+
+
+def _refusal_record(step: _Step,
                     result: executor.ActionResult) -> dict[str, Any]:
     """Returns the diagnostic record for a refused action."""
     return {
         'schema_version': SCHEMA_VERSION,
-        'run_id': run_id,
-        'episode_id': episode_id,
-        'attempted_step': step,
-        'recorded_at_ms': recorded_at_ms,
-        'observation_sequence': before.sequence,
+        'run_id': step.run_id,
+        'episode_id': step.run.episode_id,
+        'attempted_step': step.number,
+        'recorded_at_ms': step.recorded_at_ms,
+        'observation_sequence': step.before.sequence,
         'result': result.to_dict(),
     }
 
@@ -396,13 +472,18 @@ def sequence_problems(record: Mapping[str, Any]) -> list[str]:
     """Returns why a raw transition may not be used for continuous-episode
     training; an empty list means it may.
 
-    Records from schema version 1 have no run identity or continuity check,
-    so they stay as diagnostic evidence only. Event completeness is reported
+    Records older than `MIN_TRAINING_SCHEMA_VERSION` stay as diagnostic
+    evidence only (see the layout history above). Event completeness is
+    reported
     in `events_status` but does not exclude a record, since the first model
     predicts the settled after-state.
     """
-    if record.get('schema_version', 0) < 2:
+    version = record.get('schema_version', 0)
+    if version < 2:
         return ['legacy record without run identity or continuity check']
+    if version < MIN_TRAINING_SCHEMA_VERSION:
+        return [f'schema {version} lacks capture-consistency and native-'
+                'control fields']
     problems = []
     for moment in ('before', 'after'):
         if not record[moment].get('consistent', False):

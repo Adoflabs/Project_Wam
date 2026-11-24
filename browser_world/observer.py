@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 import dataclasses
+import math
 import re
 import time
 from typing import Any
@@ -74,6 +75,8 @@ _MATCH_KEY_ATTRIBUTE = 'data-wam-key'
 _MAX_TEXT_LENGTH = 120
 _WHITESPACE_RE = re.compile(r'\s+')
 _PINNED_POSITIONS = frozenset({'fixed', 'sticky'})
+# Smallest overlap with the viewport, in CSS pixels, that counts as visible.
+_MIN_VISIBLE_PX = 1.0
 # Order matters: _DomSnapshot reads the styles by position.
 _SNAPSHOT_STYLES = ('position', 'visibility', 'opacity')
 _HIDDEN_VISIBILITY = frozenset({'hidden', 'collapse'})
@@ -205,6 +208,9 @@ class Element:
       match_key: The element's `data-wam-key`. Used only to match elements
         across observations when building training labels; never model
         input, because real websites do not have it.
+      tag: The element's lowercase HTML tag name, such as 'select'. Lets
+        the executor tell native controls from look-alikes with the same
+        role; not model input.
       box: Layout box, or None for elements without layout (such as the
         options of a closed dropdown).
       visible: Whether the element is rendered with a non-empty box and is
@@ -232,6 +238,7 @@ class Element:
     states: Mapping[str, bool]
     parent_id: int | None
     match_key: str | None
+    tag: str
     box: Box | None
     visible: bool
     in_viewport: bool
@@ -250,7 +257,8 @@ class Element:
         """
         planes = frozenset(planes)
         out: dict[str, Any] = {'node_id': self.node_id,
-                               'match_key': self.match_key}
+                               'match_key': self.match_key,
+                               'tag': self.tag}
         if SEMANTIC in planes:
             out.update(role=self.role, name=self.name, value=self.value,
                        states=dict(self.states), parent_id=self.parent_id,
@@ -520,6 +528,7 @@ class _DomSnapshot:
             for index, backend_id in enumerate(nodes['backendNodeId'])
         }
         self._backend_of = nodes['backendNodeId']
+        self._tag = [strings[i].lower() for i in nodes['nodeName']]
         self._clickable = frozenset(nodes.get('isClickable', {}).get(
             'index', []))
         self._match_key: dict[int, str] = {}
@@ -564,6 +573,10 @@ class _DomSnapshot:
     def paint_order(self, index: int) -> int | None:
         """Returns the node's paint order, or None without layout."""
         return self._paint_order.get(index)
+
+    def tag(self, index: int) -> str:
+        """Returns the node's lowercase tag name."""
+        return self._tag[index]
 
     def match_key(self, index: int) -> str | None:
         """Returns the node's `data-wam-key` attribute, or None."""
@@ -707,6 +720,10 @@ class Observer:
         for _ in range(_CAPTURE_ATTEMPTS):
             marker = self._page.evaluate(_MARKER_JS)
             captured = self._capture()
+            if marker is None:
+                # Without the page script nothing can show that the page
+                # held still, so the capture is never called consistent.
+                return self._finish(*captured, consistent=False)
             if self._page.evaluate(_MARKER_JS) == marker:
                 return self._finish(*captured, consistent=True)
         return self._finish(*captured, consistent=False)
@@ -993,6 +1010,7 @@ class Observer:
             states=states,
             parent_id=parent_backend,
             match_key=snapshot.match_key(index) if index is not None else None,
+            tag=snapshot.tag(index) if index is not None else '',
             box=box,
             visible=visible,
             in_viewport=in_viewport,
@@ -1011,11 +1029,14 @@ class Observer:
         or one of its descendants."""
         # getNodeForLocation takes document coordinates, but only finds
         # nodes inside the visible viewport.
-        hit = self._cdp.send('DOM.getNodeForLocation', {
-            'x': round(point[0]),
-            'y': round(point[1]),
-            'includeUserAgentShadowDOM': False,
-        })
+        try:
+            hit = self._cdp.send('DOM.getNodeForLocation', {
+                'x': round(point[0]),
+                'y': round(point[1]),
+                'includeUserAgentShadowDOM': False,
+            })
+        except sync_api.Error:
+            return False  # Nothing is there to click; report unreachable.
         return snapshot.is_self_or_descendant(hit['backendNodeId'],
                                               backend_id)
 
@@ -1094,6 +1115,7 @@ def observation_from_dict(data: Mapping[str, Any]) -> Observation:
 
 def _element_from_dict(data: Mapping[str, Any]) -> Element:
     fields = dict(data)
+    fields.setdefault('tag', '')  # Absent before schema version 3.
     fields['box'] = Box(**data['box']) if data['box'] else None
     fields['hit_point'] = (tuple(data['hit_point']) if data['hit_point']
                            else None)
@@ -1102,20 +1124,29 @@ def _element_from_dict(data: Mapping[str, Any]) -> Element:
 
 def _visible_center(box: Box, viewport: Box) -> tuple[float, float]:
     """Returns the centre of the part of `box` inside `viewport`, in
-    document coordinates. Assumes they intersect."""
+    document coordinates, rounded to a whole pixel that lies inside the
+    viewport (the hit test only accepts whole pixels). Assumes they
+    intersect."""
     left = max(box.x, viewport.x)
     right = min(box.x + box.width, viewport.x + viewport.width)
     top = max(box.y, viewport.y)
     bottom = min(box.y + box.height, viewport.y + viewport.height)
-    return ((left + right) / 2, (top + bottom) / 2)
+    x = min(max(round((left + right) / 2), math.ceil(viewport.x)),
+            math.floor(viewport.x + viewport.width) - 1)
+    y = min(max(round((top + bottom) / 2), math.ceil(viewport.y)),
+            math.floor(viewport.y + viewport.height) - 1)
+    return (float(x), float(y))
 
 
 def _intersects(box: Box, viewport: Box) -> bool:
-    return (box.width > 0 and box.height > 0
-            and box.x < viewport.x + viewport.width
-            and box.x + box.width > viewport.x
-            and box.y < viewport.y + viewport.height
-            and box.y + box.height > viewport.y)
+    """Returns whether `box` shows at least one full CSS pixel of width and
+    height inside `viewport`; a sub-pixel sliver at an edge is not
+    visible."""
+    overlap_x = (min(box.x + box.width, viewport.x + viewport.width)
+                 - max(box.x, viewport.x))
+    overlap_y = (min(box.y + box.height, viewport.y + viewport.height)
+                 - max(box.y, viewport.y))
+    return overlap_x >= _MIN_VISIBLE_PX and overlap_y >= _MIN_VISIBLE_PX
 
 
 def attach(page: sync_api.Page, include_text: bool = True,

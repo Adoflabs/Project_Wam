@@ -18,7 +18,7 @@ Typical usage example:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 import dataclasses
 import datetime
 import re
@@ -83,6 +83,62 @@ class Doctor:
 # A slot is identified by (doctor key, ISO date, 'HH:MM').
 SlotKey = tuple[str, str, str]
 
+# Page layouts: which steps exist and in which order.
+LAYOUTS = ('wizard', 'details_first', 'combined')
+
+# Every piece of page wording, with the original Riverside Clinic text.
+# `{i}`, `{n}` and `{ref}` are filled in by the page.
+DEFAULT_TEXT: Mapping[str, str] = {
+    'clinic': 'Riverside Clinic',
+    'title': 'Book an appointment',
+    'h_appointment': 'Choose your appointment',
+    'h_details': 'Your details',
+    'h_review': 'Review and confirm',
+    'h_done': 'Appointment confirmed',
+    'service': 'Service',
+    'doctor': 'Doctor',
+    'date': 'Date',
+    'time': 'Time',
+    'name': 'Full name',
+    'email': 'Email address',
+    'phone': 'Phone number',
+    'notes': 'Notes for the doctor (optional)',
+    'consent': 'I accept the privacy notice',
+    'next': 'Next',
+    'back': 'Back',
+    'confirm': 'Confirm booking',
+    'choose_another': 'Choose another time',
+    'book_another': 'Book another appointment',
+    'pick_service': 'Select a service',
+    'pick_doctor': 'Select a doctor',
+    'pick_date': 'Select a date',
+    'times_prompt': 'Choose a date to see times.',
+    'times_loading': 'Loading times…',
+    'times_free': '{n} times available.',
+    'times_none': 'No times available on this date.',
+    'step': 'Step {i} of {n}',
+    'done': 'Booking complete',
+    'reference': 'Your reference is {ref}.',
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class Presentation:
+    """How the booking page looks: its layout and all of its wording.
+
+    Validation messages come from the server rules and do not vary.
+
+    Attributes:
+      layout: One of `LAYOUTS`: 'wizard' (appointment, details, review),
+        'details_first' (details, appointment, review) or 'combined'
+        (appointment and details on one step, then review).
+      text: Wording for every key of `DEFAULT_TEXT`.
+    """
+
+    layout: str = 'wizard'
+    text: Mapping[str, str] = dataclasses.field(
+        default_factory=lambda: dict(DEFAULT_TEXT))
+
 
 @dataclasses.dataclass(frozen=True)
 class Scenario:
@@ -101,6 +157,7 @@ class Scenario:
         that cannot be seen from the page beforehand.
       slot_latency_ms: Artificial delay on the time-slot request, so pages
         have an observable loading state.
+      presentation: The page's layout and wording.
     """
 
     scenario_id: str
@@ -112,6 +169,8 @@ class Scenario:
     prebooked: frozenset[SlotKey] = frozenset()
     contested: frozenset[SlotKey] = frozenset()
     slot_latency_ms: int = 0
+    presentation: Presentation = dataclasses.field(
+        default_factory=Presentation)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -402,13 +461,15 @@ class SessionRegistry:
     them only from its single event-loop thread.
     """
 
-    def __init__(self, scenario: Scenario):
+    def __init__(self, scenario: Scenario | Callable[[str], Scenario]):
         """Creates an empty registry.
 
         Args:
-          scenario: Scenario given to every new session.
+          scenario: Scenario given to every new session, or a function from
+            a session id to that session's scenario.
         """
-        self._scenario = scenario
+        self._scenario_for: Callable[[str], Scenario] = (
+            scenario if callable(scenario) else lambda _: scenario)
         self._sessions: dict[str, BookingSession] = {}
         self._lock = threading.Lock()
 
@@ -423,6 +484,6 @@ class SessionRegistry:
         with self._lock:
             session = self._sessions.get(session_id)
             if session is None:
-                session = BookingSession(self._scenario)
+                session = BookingSession(self._scenario_for(session_id))
                 self._sessions[session_id] = session
             return session

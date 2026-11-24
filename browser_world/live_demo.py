@@ -93,7 +93,7 @@ def _signature(observation: observer.Observation) -> str:
     ])
 
 
-def _start_server(app: Any, port: int) -> uvicorn.Server:
+def start_server(app: Any, port: int) -> uvicorn.Server:
     """Runs an ASGI app in a daemon thread and waits for it to start.
 
     Raises:
@@ -220,11 +220,11 @@ def main() -> None:
     args = parser.parse_args()
 
     log = FrameLog()
-    site = _start_server(server.create_app(booking.default_scenario()),
+    site = start_server(server.create_app(booking.default_scenario()),
                          args.site_port)
     viewer = None
     if not args.record:
-        viewer = _start_server(create_viewer_app(log), args.viewer_port)
+        viewer = start_server(create_viewer_app(log), args.viewer_port)
         print(f'Viewer: http://127.0.0.1:{args.viewer_port}  '
               '(close the Chromium window or press Ctrl+C to stop)')
     try:

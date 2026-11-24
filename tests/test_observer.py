@@ -183,3 +183,24 @@ def test_hidden_and_options_are_not_visible(world):
     assert observation.find('service').visible
     option = next(e for e in observation.elements if e.role == 'option')
     assert not option.visible  # No layout box in a closed dropdown.
+
+
+_SLIVER_PAGE = """<!doctype html>
+<body style="margin:0;height:1200px">
+  <button style="position:absolute;top:599.7px;left:20px;height:30px">
+    Sliver</button>
+  <button style="position:absolute;top:500px;left:20px">Whole</button>
+</body>"""
+
+
+def test_sub_pixel_sliver_is_not_in_viewport_and_does_not_crash(open_page):
+    # Regression: a control showing 0.3 px at the bottom edge rounded its
+    # hit point outside the viewport and crashed the observation.
+    _, watcher = open_page(_SLIVER_PAGE, viewport_height=600)
+    observation = watcher.observe()
+    sliver = next(e for e in observation.elements if e.name == 'Sliver')
+    whole = next(e for e in observation.elements if e.name == 'Whole')
+    assert not sliver.in_viewport and sliver.hit_point is None
+    assert whole.in_viewport and whole.hit_testable
+    assert whole.hit_point == (float(round(whole.hit_point[0])),
+                               float(round(whole.hit_point[1])))
