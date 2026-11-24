@@ -4,5 +4,6 @@ max-line-length=80
 indent-string='    '
 
 [MESSAGES CONTROL]
-# Google's config does not enforce these design-size heuristics.
-disable=too-many-instance-attributes,too-few-public-methods,too-many-arguments,too-many-positional-arguments,too-many-locals,missing-module-docstring
+# Google's config does not enforce these design-size heuristics (its
+# max-module-lines is 99999).
+disable=too-many-lines,too-many-instance-attributes,too-few-public-methods,too-many-arguments,too-many-positional-arguments,too-many-locals,missing-module-docstring

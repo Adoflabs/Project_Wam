@@ -21,6 +21,7 @@ from browser_world import observer
 from browser_world import server
 
 _SERVER_START_TIMEOUT_S = 10
+TEST_URL = 'http://wam.test/'
 
 
 def _free_port() -> int:
@@ -159,3 +160,23 @@ def make_world(new_page: Callable[..., sync_api.Page],
 @pytest.fixture
 def world(make_world: Callable[..., World]) -> World:
     return make_world()
+
+
+@pytest.fixture
+def open_page(
+        new_page: Callable[..., sync_api.Page]
+) -> Callable[..., tuple[sync_api.Page, observer.Observer]]:
+    """Returns a factory that serves `html` at a fake URL and observes it."""
+
+    def factory(html: str, query: str = '',
+                viewport_height: int = 800
+                ) -> tuple[sync_api.Page, observer.Observer]:
+        page = new_page(viewport_height)
+        page.route(f'{TEST_URL}**', lambda route: route.fulfill(
+            body=html, content_type='text/html'))
+        watcher = observer.attach(page)
+        page.goto(f'{TEST_URL}{query}')
+        watcher.wait_until_settled()
+        return page, watcher
+
+    return factory

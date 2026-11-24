@@ -8,17 +8,11 @@ checked with the observer. Page setup may use the existing helpers.
 # Test functions need no docstrings, and pytest injects fixtures by name.
 # pylint: disable=missing-function-docstring,redefined-outer-name
 
-from collections.abc import Callable
 import json
-
-from playwright import sync_api
-import pytest
 
 from browser_world import booking
 from browser_world import executor
 from browser_world import observer
-
-_TEST_URL = 'http://wam.test/'
 
 # A target button with a full-width hover band between it and the mouse's
 # starting corner, so every path to the button crosses the band. The
@@ -87,26 +81,6 @@ _MOVES_PAGE = """<!doctype html>
     });
   </script>
 </body>"""
-
-
-@pytest.fixture
-def open_page(
-        new_page: Callable[..., sync_api.Page]
-) -> Callable[..., tuple[sync_api.Page, observer.Observer]]:
-    """Returns a factory that serves `html` at a fake URL and observes it."""
-
-    def factory(html: str, query: str = '',
-                viewport_height: int = 800
-                ) -> tuple[sync_api.Page, observer.Observer]:
-        page = new_page(viewport_height)
-        page.route(f'{_TEST_URL}**', lambda route: route.fulfill(
-            body=html, content_type='text/html'))
-        watcher = observer.attach(page)
-        page.goto(f'{_TEST_URL}{query}')
-        watcher.wait_until_settled()
-        return page, watcher
-
-    return factory
 
 
 def _find(observation: observer.Observation, role: str,

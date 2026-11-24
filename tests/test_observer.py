@@ -152,7 +152,7 @@ def test_versions_track_dom_changes_navigation_and_scroll(make_world):
     world.watcher.wait_until_settled()
     assert not world.watcher.is_current(second)
     changed = world.watcher.observe()
-    assert changed.dom_version > second.dom_version
+    assert changed.page_version > second.page_version
     assert world.watcher.is_current(changed)
 
     world.page.mouse.wheel(0, 100)

@@ -63,6 +63,10 @@ TEXT_ROLES = frozenset({'listitem', 'paragraph'})
 _NAME_FROM_CONTENT_ROLES = frozenset(
     {'alert', 'banner', 'listitem', 'paragraph', 'status'})
 
+# Roles that hold a value; Chromium omits the value when it is empty.
+VALUE_ROLES = frozenset({'combobox', 'searchbox', 'slider', 'spinbutton',
+                         'textbox'})
+
 STATE_NAMES = ('checked', 'disabled', 'expanded', 'focused', 'invalid',
                'readonly', 'required', 'selected')
 
@@ -75,20 +79,73 @@ _SNAPSHOT_STYLES = ('position', 'visibility', 'opacity')
 _HIDDEN_VISIBILITY = frozenset({'hidden', 'collapse'})
 _OBJECT_GROUP = 'wam-observer'
 
-# Counts DOM mutations in the page. It touches only a private window
-# property, never the DOM, so it cannot change what the page shows.
-# `mutations` is reset by each observation; `total` only ever grows and is
-# the document's version number.
+# Tracks page activity and logs timestamped events. It touches only a private
+# window property, never the DOM, so it cannot change what the page shows.
+#   mutations: DOM mutation records since the last observation.
+#   total: the page version; only ever grows. Counts DOM mutations and the
+#     input, change, focus and scroll events of any element, which change
+#     state without mutating the DOM.
+#   events: mutation batches, interaction events, the document's start and
+#     finished network requests (Resource Timing API), capped at MAX_EVENTS;
+#     `dropped` counts what the cap discarded.
+#   digest(): live values, checked states, selections, focus and scroll
+#     offsets, which catches changes that fire no event at all (a script
+#     setting `input.value`).
+# Times use the page's own monotonic clock, performance.now().
 _TEMPORAL_INIT_SCRIPT = """
 (() => {
-  const state = {mutations: 0, total: 0, last: performance.now()};
+  const MAX_EVENTS = 5000;
+  const INTERACTIONS = ['input', 'change', 'focusin', 'focusout', 'scroll'];
+  const state = {mutations: 0, total: 0, last: performance.now(), dropped: 0,
+                 events: [{kind: 'document_start', t: performance.now()}]};
+  const log = (event) => {
+    if (state.events.length < MAX_EVENTS) state.events.push(event);
+    else state.dropped += 1;
+  };
+  for (const type of INTERACTIONS) {
+    document.addEventListener(type, () => {
+      state.total += 1;
+      log({kind: 'interaction', t: performance.now(), type});
+    }, {capture: true, passive: true});
+  }
   new MutationObserver((records) => {
     state.mutations += records.length;
     state.total += records.length;
     state.last = performance.now();
+    log({kind: 'mutation', t: state.last, count: records.length});
   }).observe(document, {subtree: true, childList: true, attributes: true,
                         characterData: true});
+  new PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+      log({kind: 'request', t: entry.startTime, end: entry.responseEnd,
+           url: entry.name, initiator: entry.initiatorType});
+    }
+  }).observe({type: 'resource'});
   Object.defineProperty(window, '__wamTemporal', {value: {
+    takeEvents() {
+      const out = {events: state.events, dropped: state.dropped,
+                   now: performance.now()};
+      state.events = [];
+      state.dropped = 0;
+      return out;
+    },
+    digest() {
+      const all = document.getElementsByTagName('*');
+      const parts = [];
+      for (let i = 0; i < all.length; i++) {
+        const el = all[i];
+        if (el === document.activeElement) parts.push(['focus', i]);
+        if (el.scrollTop || el.scrollLeft) {
+          parts.push(['scroll', i, el.scrollTop, el.scrollLeft]);
+        }
+        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+          parts.push(['value', i, el.value, el.checked]);
+        } else if (el.tagName === 'SELECT') {
+          parts.push(['select', i, el.selectedIndex]);
+        }
+      }
+      return JSON.stringify(parts);
+    },
     take() {
       const out = {mutations: state.mutations, total: state.total,
                    msSinceMutation: performance.now() - state.last};
@@ -103,6 +160,9 @@ _TEMPORAL_INIT_SCRIPT = """
 })();
 """
 _NO_TEMPORAL = '{mutations: 0, total: 0, msSinceMutation: 0}'
+_NO_EVENTS = '{events: [], dropped: 0, now: performance.now(), missing: true}'
+_DIGEST_JS = ('window.__wamTemporal ? window.__wamTemporal.digest() : '
+              '"no-temporal-script"')
 
 
 @dataclasses.dataclass(frozen=True)
@@ -130,7 +190,8 @@ class Element:
         a re-rendered element gets a new id.
       role: Accessibility role, such as 'textbox'.
       name: Accessible name, or text content for text-like roles.
-      value: Current value for fields, or None.
+      value: Current value for `VALUE_ROLES` ('' when empty); None for
+        elements that hold no value.
       states: Accessibility states, keyed by `STATE_NAMES`.
       parent_id: `node_id` of the nearest observed ancestor, or None.
       match_key: The element's `data-wam-key`. Used only to match elements
@@ -250,14 +311,72 @@ class Temporal:
 
 
 @dataclasses.dataclass(frozen=True)
+class BrowserEvent:
+    """One timestamped browser event inside an event window.
+
+    Mutation events count DOM changes; they do not reconstruct what the
+    page looked like in between. Only an explicit observation does that.
+
+    Attributes:
+      kind: 'mutation', 'interaction', 'request', 'navigation' or
+        'document_start'.
+      t_ms: Milliseconds since the window started, on the observer's
+        monotonic clock. Page events are converted from the page's clock;
+        navigation times are when the observer received the event, so they
+        can lag by up to one Playwright call.
+      detail: Kind-specific data: `count` for mutations; `type` for
+        interactions ('input', 'change', 'focusin', 'focusout', 'scroll');
+        `end_ms`, `url` and `initiator` for finished requests; `url` for
+        navigations.
+    """
+
+    kind: str
+    t_ms: float
+    detail: Mapping[str, Any]
+
+
+@dataclasses.dataclass(frozen=True)
+class EventTrace:
+    """The events of one window and how complete they are known to be.
+
+    "Complete" covers the main document only: its DOM mutations, its
+    input/change/focus/scroll events and its finished network requests.
+    Iframes and shadow roots are not watched.
+
+    Attributes:
+      events: The events, sorted by time.
+      complete: True only when no loss is known or possible from the
+        reasons below; never assumed.
+      dropped: Events discarded by the cap, or None when loss cannot be
+        counted (for example, a document replaced during the window).
+      incomplete_reasons: Why the trace is not complete: 'cap_reached',
+        'navigation' (the old document's log was lost), 'requests_pending'
+        (unfinished requests are not logged) or 'no_page_log'.
+    """
+
+    events: tuple[BrowserEvent, ...]
+    complete: bool
+    dropped: int | None
+    incomplete_reasons: tuple[str, ...]
+
+    def status(self) -> dict[str, Any]:
+        """Returns the completeness fields as a JSON-ready dict."""
+        return {'complete': self.complete, 'dropped': self.dropped,
+                'incomplete_reasons': list(self.incomplete_reasons)}
+
+
+@dataclasses.dataclass(frozen=True)
 class Observation:
     """Everything the observer saw at one moment.
 
     Attributes:
       sequence: This observer's observation counter, starting at 1.
       page_epoch: Main-frame navigations seen before this observation.
-      dom_version: DOM mutations in the current document so far. Together
-        with `page_epoch` it identifies the page version observed.
+      page_version: DOM mutations plus input, change, focus and scroll
+        events in the current document so far. With `page_epoch` it
+        identifies the page version observed.
+      state_digest: Live field values, checked states, selections, focus
+        and scroll offsets when observed, for detecting silent changes.
       url: The page URL.
       title: The document title.
       elements: Observed elements in document order.
@@ -267,7 +386,8 @@ class Observation:
 
     sequence: int
     page_epoch: int
-    dom_version: int
+    page_version: int
+    state_digest: str
     url: str
     title: str
     elements: tuple[Element, ...]
@@ -288,7 +408,8 @@ class Observation:
         out: dict[str, Any] = {
             'sequence': self.sequence,
             'page_epoch': self.page_epoch,
-            'dom_version': self.dom_version,
+            'page_version': self.page_version,
+            'state_digest': self.state_digest,
             'url': self.url,
             'title': self.title,
             'elements': [e.to_dict(planes) for e in self.elements],
@@ -506,6 +627,8 @@ class Observer:
         self._page_epoch = 0
         self._sequence = 0
         self._settled: bool | None = None
+        self._window_start: float | None = None
+        self._navigation_events: list[BrowserEvent] = []
         self._cdp = page.context.new_cdp_session(page)
         self._cdp.on('Network.requestWillBeSent', self._on_request)
         self._cdp.on('Network.loadingFinished', self._on_request_done)
@@ -528,6 +651,10 @@ class Observer:
             self._navigations += 1
             self._page_epoch += 1
             self._pending_requests.clear()
+            if self._window_start is not None:
+                self._navigation_events.append(BrowserEvent(
+                    'navigation', _ms_since(self._window_start),
+                    {'url': event['frame'].get('url', '')}))
 
     def wait_until_settled(self, quiet_ms: float = 100,
                            timeout_ms: float = 5000) -> bool:
@@ -571,7 +698,8 @@ class Observer:
         elements = self._elements(ax_nodes, snapshot, viewport)
         if self._cull_offscreen:
             elements = [e for e in elements if e.in_viewport or e.box is None]
-        temporal, dom_version = self._take_temporal()
+        temporal, page_version = self._take_temporal()
+        state_digest = self._page.evaluate(_DIGEST_JS)
         self._sequence += 1
         motion = Motion(
             viewport_width=viewport.width,
@@ -586,7 +714,8 @@ class Observer:
         return Observation(
             sequence=self._sequence,
             page_epoch=self._page_epoch,
-            dom_version=dom_version,
+            page_version=page_version,
+            state_digest=state_digest,
             url=self._page.url,
             title=self._page.title(),
             elements=tuple(elements),
@@ -594,12 +723,65 @@ class Observer:
             temporal=temporal,
         )
 
-    def current_version(self) -> tuple[int, int]:
-        """Returns the live (page_epoch, dom_version) of the page.
+    def start_events(self) -> None:
+        """Opens an event window: discards older events and starts the
+        clock that `take_events` measures from."""
+        self._page.evaluate(
+            f'window.__wamTemporal ? window.__wamTemporal.takeEvents() : '
+            f'{_NO_EVENTS}')
+        self._navigation_events = []
+        self._window_start = time.monotonic()
 
-        Compare with an observation's fields to tell whether the DOM or the
-        document changed since it was taken. Typing into a field changes
-        its value without a DOM mutation, so this cannot detect that.
+    def take_events(self) -> EventTrace:
+        """Returns the events since `start_events` and closes the window.
+
+        Events logged by a document that was replaced during the window are
+        lost with it; the navigation itself is still reported, and the trace
+        is marked incomplete.
+
+        Raises:
+          RuntimeError: No window is open.
+        """
+        if self._window_start is None:
+            raise RuntimeError('Call start_events() before take_events().')
+        before = time.monotonic()
+        page_log = self._page.evaluate(
+            f'window.__wamTemporal ? window.__wamTemporal.takeEvents() : '
+            f'{_NO_EVENTS}')
+        after = time.monotonic()
+        # Maps page-clock times onto the window clock, using the midpoint of
+        # the evaluate call as the moment the page read performance.now().
+        offset_ms = ((before + after) / 2 - self._window_start) * 1000 - float(
+            page_log['now'])
+        events = [_page_event(raw, offset_ms) for raw in page_log['events']]
+        events.extend(self._navigation_events)
+        reasons = []
+        dropped: int | None = int(page_log['dropped'])
+        if dropped:
+            reasons.append('cap_reached')
+        if self._navigation_events:
+            reasons.append('navigation')
+            dropped = None  # The replaced document's losses are unknown.
+        if self._pending_requests:
+            reasons.append('requests_pending')
+        if page_log.get('missing'):
+            reasons.append('no_page_log')
+            dropped = None
+        self._window_start = None
+        self._navigation_events = []
+        return EventTrace(
+            events=tuple(sorted(events, key=lambda e: e.t_ms)),
+            complete=not reasons,
+            dropped=dropped,
+            incomplete_reasons=tuple(reasons),
+        )
+
+    def current_version(self) -> tuple[int, int]:
+        """Returns the live (page_epoch, page_version) of the page.
+
+        A script that sets `input.value`, `.checked` or `.selectedIndex`
+        fires no event, so the version cannot see that; `is_current` also
+        compares the live state digest.
         """
         # Evaluating first lets Playwright deliver pending navigation events.
         counts = self._page.evaluate(
@@ -608,14 +790,21 @@ class Observer:
         return self._page_epoch, int(counts['total'])
 
     def is_current(self, observation: Observation) -> bool:
-        """Returns whether the page still matches `observation`: same
-        document, no DOM mutation since, and the same scroll position."""
-        version = (observation.page_epoch, observation.dom_version)
+        """Returns whether the page still matches `observation`.
+
+        It must be the same document, with no DOM mutation or input,
+        change, focus or scroll event since, the same window scroll, and
+        the same live field values, selections, focus and element scroll
+        offsets.
+        """
+        version = (observation.page_epoch, observation.page_version)
         if self.current_version() != version:
             return False
         metrics = self._cdp.send('Page.getLayoutMetrics')['cssVisualViewport']
-        return (float(metrics['pageX']) == observation.motion.scroll_x
-                and float(metrics['pageY']) == observation.motion.scroll_y)
+        if (float(metrics['pageX']) != observation.motion.scroll_x
+                or float(metrics['pageY']) != observation.motion.scroll_y):
+            return False
+        return self._page.evaluate(_DIGEST_JS) == observation.state_digest
 
     def hits_node(self, x: float, y: float, node_id: int) -> bool | None:
         """Returns whether a click at document point (x, y) reaches a node.
@@ -759,6 +948,8 @@ class Observer:
             hit_point = _visible_center(box, viewport)
             hit_testable = self._hit_test(hit_point, backend_id, snapshot)
         value = _ax_value(node, 'value')
+        if value is None and role in VALUE_ROLES:
+            value = ''
         return Element(
             node_id=backend_id,
             role=role,
@@ -819,6 +1010,57 @@ def _declares_required(attributes: Sequence[int],
         if name == 'required' or (name == 'aria-required' and value == 'true'):
             return True
     return False
+
+
+def _ms_since(start: float) -> float:
+    return round((time.monotonic() - start) * 1000, 2)
+
+
+def _page_event(raw: Mapping[str, Any], offset_ms: float) -> BrowserEvent:
+    """Converts one page-logged event onto the window clock."""
+    t_ms = round(float(raw['t']) + offset_ms, 2)
+    if raw['kind'] == 'request':
+        detail = {'end_ms': round(float(raw['end']) + offset_ms, 2),
+                  'url': raw['url'], 'initiator': raw['initiator']}
+    elif raw['kind'] == 'mutation':
+        detail = {'count': int(raw['count'])}
+    elif raw['kind'] == 'interaction':
+        detail = {'type': raw['type']}
+    else:
+        detail = {}
+    return BrowserEvent(raw['kind'], t_ms, detail)
+
+
+def observation_from_dict(data: Mapping[str, Any]) -> Observation:
+    """Rebuilds an `Observation` from `Observation.to_dict()` output.
+
+    Args:
+      data: A dict produced with all planes, possibly after a JSON round
+        trip.
+
+    Returns:
+      An observation equal to the original.
+    """
+    elements = tuple(_element_from_dict(e) for e in data['elements'])
+    return Observation(
+        sequence=data['sequence'],
+        page_epoch=data['page_epoch'],
+        page_version=data['page_version'],
+        state_digest=data['state_digest'],
+        url=data['url'],
+        title=data['title'],
+        elements=elements,
+        motion=Motion(**data['motion']),
+        temporal=Temporal(**data['temporal']),
+    )
+
+
+def _element_from_dict(data: Mapping[str, Any]) -> Element:
+    fields = dict(data)
+    fields['box'] = Box(**data['box']) if data['box'] else None
+    fields['hit_point'] = (tuple(data['hit_point']) if data['hit_point']
+                           else None)
+    return Element(**fields)
 
 
 def _visible_center(box: Box, viewport: Box) -> tuple[float, float]:
