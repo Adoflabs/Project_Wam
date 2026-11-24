@@ -143,6 +143,17 @@ async def _truth_bookings(request: requests.Request) -> responses.Response:
         [dataclasses.asdict(b) for b in session.bookings])
 
 
+async def _truth_state(request: requests.Request) -> responses.Response:
+    """Full backend state, including what the page cannot show: taken slots
+    and races already resolved. Lets collectors confirm a reset."""
+    session = _session(request)
+    return responses.JSONResponse({
+        'bookings': [dataclasses.asdict(b) for b in session.bookings],
+        'taken': [list(k) for k in session.taken],
+        'contests_resolved': [list(k) for k in session.contests_resolved],
+    })
+
+
 async def _missing_session(request: requests.Request,
                            exc: Exception) -> responses.Response:
     del request, exc  # Unused.
@@ -177,6 +188,7 @@ def create_app(
             routing.Route('/api/bookings', _book, methods=['POST']),
             routing.Route('/api/reset', _reset, methods=['POST']),
             routing.Route('/api/truth/bookings', _truth_bookings),
+            routing.Route('/api/truth/state', _truth_state),
         ],
         exception_handlers={_MissingSessionError: _missing_session},
     )

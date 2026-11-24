@@ -31,7 +31,8 @@ from browser_world import booking
 SUCCESS = 'success'
 CONFLICT = 'conflict'
 INVALID_EMAIL = 'invalid_email'
-OUTCOMES = (SUCCESS, CONFLICT, INVALID_EMAIL)
+NATURAL = 'natural'
+OUTCOMES = (SUCCESS, CONFLICT, INVALID_EMAIL, NATURAL)
 
 _HARBOR_TEXT = {
     'clinic': 'Harbor Health Centre',
@@ -262,7 +263,8 @@ def goal(scenario: booking.Scenario, seed: int, outcome: str) -> Goal:
 
     SUCCESS books a free, uncontested slot; CONFLICT picks a contested slot,
     which looks free until confirmed; INVALID_EMAIL picks a free slot but
-    enters a malformed email.
+    enters a malformed email; NATURAL picks uniformly among all slots that
+    look free, so races happen only at their natural rate.
 
     Raises:
       ValueError: Unknown outcome.
@@ -273,7 +275,11 @@ def goal(scenario: booking.Scenario, seed: int, outcome: str) -> Goal:
     session = booking.BookingSession(scenario)
     free = sorted(set(_all_slots(scenario)) - scenario.prebooked
                   - scenario.contested)
-    pool = sorted(scenario.contested) if outcome == CONFLICT else free
+    pool = free
+    if outcome == CONFLICT:
+        pool = sorted(scenario.contested)
+    elif outcome == NATURAL:
+        pool = sorted(set(free) | scenario.contested)
     doctor_key, date_iso, time = rng.choice(pool)
     doctor = next(d for d in scenario.doctors if d.key == doctor_key)
     service = rng.choice([s for s in scenario.services

@@ -299,6 +299,17 @@ class BookingSession:
         """Bookings confirmed in this session, oldest first."""
         return tuple(self._bookings)
 
+    @property
+    def taken(self) -> tuple[SlotKey, ...]:
+        """Slots that are no longer free (prebooked, booked or lost in a
+        race), sorted."""
+        return tuple(sorted(self._taken))
+
+    @property
+    def contests_resolved(self) -> tuple[SlotKey, ...]:
+        """Race slots whose race has already happened, sorted."""
+        return tuple(sorted(self._contest_resolved))
+
     def reset(self) -> None:
         """Restores the scenario's initial state exactly."""
         self._taken = set(self._scenario.prebooked)

@@ -107,7 +107,7 @@ def _episode(page: sync_api.Page, watcher: observer.Observer,
                                           headers=headers).json())
     goal = scenarios.goal(scenario, seed, outcome)
     text = scenario.presentation.text
-    todo = list(goal_policy.intents(goal, text))
+    wanted = goal_policy.intents(goal, text)
     run_id = rec.new_run(f'watch-{scenario.scenario_id}-{outcome}', 'start',
                          scenario={'scenario_id': scenario.scenario_id,
                                    'family': family, 'seed': seed,
@@ -127,10 +127,11 @@ def _episode(page: sync_api.Page, watcher: observer.Observer,
             return ended
         if step == 0:
             log.add(observation, f'{family}: page loaded', observe_ms)
-        choice = goal_policy.choose(observation, todo, text)
+        choice = goal_policy.choose(
+            observation, goal_policy.pending(observation, wanted), text)
         if choice is None:
             raise RuntimeError('The decider found nothing useful to do.')
-        action, intent = choice
+        action, _ = choice
         if action.target is not None:
             target = next(e for e in observation.elements
                           if e.node_id == action.target)
@@ -142,8 +143,6 @@ def _episode(page: sync_api.Page, watcher: observer.Observer,
         label = describe(action, outcome_of_step.target)
         print(f'    step {outcome_of_step.step:2d}: {label}')
         log.add(outcome_of_step.after, f'{family}: {label}', observe_ms)
-        if intent is not None:
-            todo.remove(intent)
     raise RuntimeError('The episode did not end.')
 
 
