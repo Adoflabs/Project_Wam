@@ -59,6 +59,21 @@ def windows(examples: Sequence[Example], k: int) -> list[list[Example]]:
     return found
 
 
+def _validate_byte_ids(ids: object) -> None:
+    """Rejects invalid serialized byte IDs before tensor conversion."""
+    if not isinstance(ids, list):
+        raise ValueError('Byte IDs must be stored as a list.')
+    for byte_id in ids:
+        if type(byte_id) is not int:  # pylint: disable=unidiomatic-typecheck
+            raise ValueError(
+                f'Byte ID must be an integer: {byte_id!r}'
+            )
+        if not 1 <= byte_id < curate.BYTE_VOCAB_SIZE:
+            raise ValueError(
+                f'Byte ID outside the valid range: {byte_id}'
+            )
+
+
 def _step_tensors(example: Example) -> dict[str, torch.Tensor]:
     """Converts one curated example to unpadded tensors."""
     elements = example['inputs']['state']['elements']
@@ -77,7 +92,17 @@ def _step_tensors(example: Example) -> dict[str, torch.Tensor]:
         return torch.zeros((0,) if width is None else (0, width),
                            dtype=torch.long)
 
-    return {
+    def byte_matrix(key: str) -> torch.Tensor:
+        if not elements:
+            return torch.zeros((0, 0), dtype=torch.long)
+        max_len = max(len(row[key]) for row in elements)
+        padded = [
+            row[key] + [curate.BYTE_PAD_ID] * (max_len - len(row[key]))
+            for row in elements
+        ]
+        return torch.tensor(padded, dtype=torch.long)
+
+    step: dict[str, torch.Tensor] = {
         'role': column(elements, 'role', torch.long),
         'name_words': column(elements, 'name_words', torch.long),
         'name_chars': column(elements, 'name_chars', torch.long),
@@ -110,6 +135,28 @@ def _step_tensors(example: Example) -> dict[str, torch.Tensor]:
         't_new_words': new_column('name_words', curate.MAX_NAME_WORDS),
         't_new_parent': new_column('parent_before'),
     }
+    has_action_bytes = 'text_bytes' in action
+    any_elem_bytes = any(
+        'name_bytes' in row or 'value_bytes' in row for row in elements)
+    if has_action_bytes:
+        if any('name_bytes' not in row or 'value_bytes' not in row
+               for row in elements):
+            raise ValueError(
+                'Malformed byte-enabled record: missing element byte fields.')
+    elif any_elem_bytes:
+        raise ValueError(
+            'Malformed byte-enabled record: missing action text_bytes.')
+
+    if has_action_bytes:
+        for element in elements:
+            _validate_byte_ids(element['name_bytes'])
+            _validate_byte_ids(element['value_bytes'])
+        _validate_byte_ids(action['text_bytes'])
+        step['name_bytes'] = byte_matrix('name_bytes')
+        step['value_bytes'] = byte_matrix('value_bytes')
+        step['action_text_bytes'] = torch.tensor(
+            action['text_bytes'], dtype=torch.long)
+    return step
 
 
 class Windows(torch_data.Dataset):
@@ -153,9 +200,21 @@ def collate(batch: Sequence[Sequence[Mapping[str, torch.Tensor]]]
     (`t_known`, `t_matched`, `t_value_mask`, `t_box_mask`).
     """
     k = len(batch[0])
+    byte_flags = {'name_bytes' in step for window in batch for step in window}
+    if len(byte_flags) > 1:
+        raise ValueError(
+            'Cannot mix legacy-only and byte-enabled records in one batch.')
+    has_bytes = next(iter(byte_flags))
     n = max(step['role'].shape[0] for window in batch for step in window)
     m = max(step['t_new_role'].shape[0] for window in batch
             for step in window)
+    if has_bytes:
+        l_name = max(1, max(step['name_bytes'].shape[1]
+                            for window in batch for step in window))
+        l_value = max(1, max(step['value_bytes'].shape[1]
+                             for window in batch for step in window))
+        l_action = max(1, max(step['action_text_bytes'].shape[0]
+                              for window in batch for step in window))
     out: dict[str, list[torch.Tensor]] = collections.defaultdict(list)
     for window in batch:
         if len(window) != k:
@@ -166,6 +225,12 @@ def collate(batch: Sequence[Sequence[Mapping[str, torch.Tensor]]]
                     value = _pad(value, n, _PAD_VALUES.get(key, 0))
                 elif key in _NEW_KEYS:
                     value = _pad(value, m, _PAD_VALUES.get(key, 0))
+                elif key == 'name_bytes':
+                    value = _pad_2d(value, n, l_name, curate.BYTE_PAD_ID)
+                elif key == 'value_bytes':
+                    value = _pad_2d(value, n, l_value, curate.BYTE_PAD_ID)
+                elif key == 'action_text_bytes':
+                    value = _pad(value, l_action, curate.BYTE_PAD_ID)
                 out[key].append(value)
             out['element_mask'].append(
                 torch.arange(n) < step['role'].shape[0])
@@ -179,10 +244,40 @@ def collate(batch: Sequence[Sequence[Mapping[str, torch.Tensor]]]
             for key, values in out.items()}
 
 
-def _pad(value: torch.Tensor, length: int, fill: int) -> torch.Tensor:
+def _pad(
+    value: torch.Tensor,
+    length: int,
+    fill: int,
+) -> torch.Tensor:
+    """Pads axis zero without reducing the original tensor."""
     missing = length - value.shape[0]
-    if missing <= 0:
+    if missing < 0:
+        raise ValueError(
+            'Padding length cannot be smaller than the input length.'
+        )
+    if missing == 0:
         return value
-    padding = torch.full((missing, *value.shape[1:]), fill,
-                         dtype=value.dtype)
-    return torch.cat([value, padding])
+    padding = value.new_full(
+        (missing, *value.shape[1:]),
+        fill,
+    )
+    return torch.cat((value, padding), dim=0)
+
+
+def _pad_2d(
+    value: torch.Tensor,
+    rows: int,
+    cols: int,
+    fill: int,
+) -> torch.Tensor:
+    """Pads both axes of a two-dimensional tensor."""
+    if value.ndim != 2:
+        raise ValueError('Expected a two-dimensional tensor.')
+    input_rows, input_cols = value.shape
+    if rows < input_rows or cols < input_cols:
+        raise ValueError(
+            'Padding cannot reduce an existing tensor dimension.'
+        )
+    output = value.new_full((rows, cols), fill)
+    output[:input_rows, :input_cols] = value
+    return output

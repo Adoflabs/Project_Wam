@@ -54,9 +54,26 @@ MAX_NAME_WORDS = 8
 MAX_CHARS = 32
 BOX_TOLERANCE_PX = 1.0
 PAD, UNK = 0, 1
+BYTE_PAD_ID = 0
+BYTE_VOCAB_SIZE = 257
+INPUT_ENCODINGS = ('legacy', 'utf8_bytes_v1')
 MANIFEST_STATUSES = frozenset({'complete', 'failed', 'timed_out', 'refused',
                                'abandoned'})
 _WORD_RE = re.compile(r'[a-z0-9]+')
+
+
+def encode_bytes(text: str | None) -> list[int]:
+    """Returns lossless UTF-8 byte IDs, reserving zero for padding."""
+    if text is None:
+        return []
+    return [byte + 1 for byte in text.encode('utf-8')]
+
+
+def _validate_input_encoding(input_encoding: str) -> None:
+    if input_encoding not in INPUT_ENCODINGS:
+        raise ValueError(
+            f'Unsupported input_encoding {input_encoding!r}; '
+            f'expected one of {INPUT_ENCODINGS}')
 
 
 # --- Loading -----------------------------------------------------------
@@ -448,18 +465,21 @@ def _viewport_box(box: observer.Box | None,
 
 
 def encode_state(observation: observer.Observation,
-                 vocabs: Vocabs) -> dict[str, Any]:
+                 vocabs: Vocabs,
+                 *,
+                 input_encoding: str = 'legacy') -> dict[str, Any]:
     """Returns the allowed input features of one observation.
 
     No browser ids, page keys, tags, counters or temporal counts: only
     what the page shows, plus the element order and parent positions.
     """
+    _validate_input_encoding(input_encoding)
     position = {e.node_id: i for i, e in enumerate(observation.elements)}
     motion = observation.motion
     elements = []
     for element in observation.elements:
         box = _viewport_box(element.box, motion)
-        elements.append({
+        entry: dict[str, Any] = {
             'role': vocabs.roles.encode(element.role),
             'name_words': vocabs.name_words(element.name),
             'name_chars': vocabs.text_chars(element.name),
@@ -471,7 +491,11 @@ def encode_state(observation: observer.Observation,
             'box': box or [0.0, 0.0, 0.0, 0.0],
             'box_mask': box is not None,
             'parent': _position(position, element.parent_id),
-        })
+        }
+        if input_encoding == 'utf8_bytes_v1':
+            entry['name_bytes'] = encode_bytes(element.name)
+            entry['value_bytes'] = encode_bytes(element.value)
+        elements.append(entry)
     page = [motion.scroll_x / max(motion.content_width, 1.0),
             motion.scroll_y / max(motion.content_height, 1.0),
             motion.content_width / motion.viewport_width,
@@ -480,14 +504,17 @@ def encode_state(observation: observer.Observation,
 
 
 def encode_action(record: Mapping[str, Any], vocabs: Vocabs,
-                  motion: observer.Motion) -> dict[str, Any]:
+                  motion: observer.Motion,
+                  *,
+                  input_encoding: str = 'legacy') -> dict[str, Any]:
     """Returns the action's input features, with the agent's own pointer
     position at the start of the action (known before acting)."""
+    _validate_input_encoding(input_encoding)
     action, target = record['action'], record['target']
     start = record['result']['pointer_path'][0] if record['result'][
         'pointer_path'] else {'x': 0.0, 'y': 0.0}
     checked = action.get('checked')
-    return {
+    encoded: dict[str, Any] = {
         'kind': ACTION_KINDS.index(action['kind']),
         'target': target['index'] if target else -1,
         'text_chars': vocabs.text_chars(action.get('text')),
@@ -496,6 +523,9 @@ def encode_action(record: Mapping[str, Any], vocabs: Vocabs,
         'pointer': [start['x'] / motion.viewport_width,
                     start['y'] / motion.viewport_height],
     }
+    if input_encoding == 'utf8_bytes_v1':
+        encoded['text_bytes'] = encode_bytes(action.get('text'))
+    return encoded
 
 
 def _dropdown_index(observation: observer.Observation,
@@ -619,9 +649,12 @@ def _outcomes(record: Mapping[str, Any], alignment: Alignment,
 
 
 def curate_record(record: Mapping[str, Any],
-                  vocabs: Vocabs) -> dict[str, Any]:
+                  vocabs: Vocabs,
+                  *,
+                  input_encoding: str = 'legacy') -> dict[str, Any]:
     """Returns one curated example: metadata (never model input), inputs,
     targets and alignment statistics."""
+    _validate_input_encoding(input_encoding)
     before = _observation(record['before'])
     after = _observation(record['after'])
     alignment = align(before, after)
@@ -630,8 +663,12 @@ def curate_record(record: Mapping[str, Any],
                  'split': record['scenario']['split'],
                  'family': record['scenario']['family'],
                  'action_kind': record['action']['kind']},
-        'inputs': {'state': encode_state(before, vocabs),
-                   'action': encode_action(record, vocabs, before.motion)},
+        'inputs': {
+            'state': encode_state(
+                before, vocabs, input_encoding=input_encoding),
+            'action': encode_action(
+                record, vocabs, before.motion, input_encoding=input_encoding),
+        },
         'targets': encode_targets(record, vocabs, alignment, before, after),
         'alignment': {'tiers': dict(alignment.tiers),
                       'ambiguous_before': len(alignment.ambiguous_before),
@@ -707,7 +744,18 @@ def _source_commit() -> str:
         return 'unknown'
 
 
-def curate(raw_dir: pathlib.Path, out_dir: pathlib.Path) -> dict[str, Any]:
+def _working_tree_dirty() -> bool | None:
+    try:
+        result = subprocess.run(['git', 'status', '--porcelain'], check=True,
+                                capture_output=True, text=True)
+        return bool(result.stdout.strip())
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def curate(raw_dir: pathlib.Path, out_dir: pathlib.Path,
+           *,
+           input_encoding: str = 'legacy') -> dict[str, Any]:
     """Validates `raw_dir` and writes curated examples to `out_dir`.
 
     Returns:
@@ -715,11 +763,34 @@ def curate(raw_dir: pathlib.Path, out_dir: pathlib.Path) -> dict[str, Any]:
 
     Raises:
       CurationError: Validation found fatal problems.
+      ValueError: `input_encoding` is unsupported or `raw_dir` and `out_dir`
+        overlap.
+      NotADirectoryError: `out_dir` exists and is not a directory.
+      FileExistsError: `out_dir` already exists and is not empty.
     """
+    _validate_input_encoding(input_encoding)
+    raw_path = raw_dir.resolve()
+    output_path = out_dir.resolve()
+    if (
+        output_path.is_relative_to(raw_path)
+        or raw_path.is_relative_to(output_path)
+    ):
+        raise ValueError(
+            'Raw and curated dataset directories must not overlap.'
+        )
+    if out_dir.exists():
+        if not out_dir.is_dir():
+            raise NotADirectoryError(
+                f'Destination is not a directory: {out_dir}'
+            )
+        if any(out_dir.iterdir()):
+            raise FileExistsError(
+                f'Destination directory is not empty: {out_dir}'
+            )
     report = validate(raw_dir)
     if report.problems:
         raise CurationError('\n'.join(report.problems[:20]))
-    _, records = load(raw_dir)
+    raw_manifest, records = load(raw_dir)
     vocabs = Vocabs()
     vocabs.fit(r for r in records['train']
                if f'{r["run_id"]}#{r["step"]}' not in report.exclusions)
@@ -731,29 +802,38 @@ def curate(raw_dir: pathlib.Path, out_dir: pathlib.Path) -> dict[str, Any]:
         kept = [r for r in records[split]
                 if f'{r["run_id"]}#{r["step"]}' not in report.exclusions]
         kept.sort(key=lambda r: (r['run_id'], r['step']))
-        examples = [curate_record(r, vocabs) for r in kept]
-        with (out_dir / f'{split}.jsonl').open('w', encoding='utf-8') as f:
+        examples = [curate_record(r, vocabs, input_encoding=input_encoding)
+                    for r in kept]
+        with (out_dir / f'{split}.jsonl').open(
+                'w', encoding='utf-8', newline='\n') as f:
             for example in examples:
                 f.write(json.dumps(example) + '\n')
         counts[split] = len(examples)
         coverage[split] = label_coverage(examples)
         alignment[split] = ambiguity(examples)
-    (out_dir / 'vocab.json').write_text(json.dumps({
-        'roles': vocabs.roles.tokens, 'words': vocabs.words.tokens,
-        'chars': vocabs.chars.tokens}))
-    manifest = {
+    vocab_path = out_dir / 'vocab.json'
+    with vocab_path.open('w', encoding='utf-8', newline='\n') as f:
+        f.write(json.dumps({
+            'roles': vocabs.roles.tokens, 'words': vocabs.words.tokens,
+            'chars': vocabs.chars.tokens}))
+    source_files = {
+        p.relative_to(raw_dir).as_posix(): _sha256(p)
+        for p in sorted(raw_dir.rglob('*.json*'))
+    }
+    config: dict[str, Any] = {
+        'state_names': list(STATE_NAMES),
+        'action_kinds': list(ACTION_KINDS),
+        'value_sources': list(VALUE_SOURCES),
+        'outcomes': list(OUTCOMES),
+        'max_name_words': MAX_NAME_WORDS,
+        'max_chars': MAX_CHARS,
+        'box_tolerance_px': BOX_TOLERANCE_PX,
+        'vocab_fitted_on': 'train only',
+    }
+    manifest: dict[str, Any] = {
         'schema_version': SUPPORTED_SCHEMA,
-        'source_commit': _source_commit(),
-        'source_files': {
-            str(p.relative_to(raw_dir)): _sha256(p)
-            for p in sorted(raw_dir.rglob('*.json*'))},
-        'config': {'state_names': list(STATE_NAMES),
-                   'action_kinds': list(ACTION_KINDS),
-                   'value_sources': list(VALUE_SOURCES),
-                   'outcomes': list(OUTCOMES),
-                   'max_name_words': MAX_NAME_WORDS, 'max_chars': MAX_CHARS,
-                   'box_tolerance_px': BOX_TOLERANCE_PX,
-                   'vocab_fitted_on': 'train only'},
+        'source_files': source_files,
+        'config': config,
         'vocab_sizes': {'roles': len(vocabs.roles.tokens),
                         'words': len(vocabs.words.tokens),
                         'chars': len(vocabs.chars.tokens)},
@@ -761,10 +841,39 @@ def curate(raw_dir: pathlib.Path, out_dir: pathlib.Path) -> dict[str, Any]:
         'exclusions': report.exclusions,
         'label_coverage': coverage,
         'alignment': alignment,
-        'curated_files': {f'{s}.jsonl': _sha256(out_dir / f'{s}.jsonl')
-                          for s in SPLITS},
+        'curated_files': {f'{split}.jsonl': _sha256(out_dir / f'{split}.jsonl')
+                          for split in SPLITS},
     }
-    (out_dir / 'manifest.json').write_text(json.dumps(manifest, indent=1))
+    if input_encoding == 'utf8_bytes_v1':
+        config.update({
+            'input_encoding': input_encoding,
+            'byte_padding_id': BYTE_PAD_ID,
+            'byte_vocab_size': BYTE_VOCAB_SIZE,
+            'byte_truncation': False,
+        })
+        manifest.update({
+            'input_encoding': input_encoding,
+            'byte_padding_id': BYTE_PAD_ID,
+            'byte_vocab_size': BYTE_VOCAB_SIZE,
+            'curation_commit': _source_commit(),
+            'curation_dirty': _working_tree_dirty(),
+            'source_dataset': {
+                'raw_dir': raw_dir.as_posix(),
+                'schema_version': (raw_manifest.get('schema_version')
+                                   if raw_manifest else None),
+                'splits': (raw_manifest.get('splits')
+                           if raw_manifest else None),
+                'episodes': (len(raw_manifest.get('episodes', []))
+                             if raw_manifest else 0),
+                'manifest_sha256': source_files.get('manifest.json'),
+            },
+            'vocab_sha256': _sha256(vocab_path),
+        })
+    else:
+        manifest['source_commit'] = _source_commit()
+    with (out_dir / 'manifest.json').open(
+            'w', encoding='utf-8', newline='\n') as f:
+        f.write(json.dumps(manifest, indent=1))
     return manifest
 
 
@@ -773,8 +882,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--raw', default='data/raw/e04/main')
     parser.add_argument('--out', default='data/curated/c01')
+    parser.add_argument('--input-encoding', choices=INPUT_ENCODINGS,
+                        default='legacy')
     args = parser.parse_args()
-    manifest = curate(pathlib.Path(args.raw), pathlib.Path(args.out))
+    manifest = curate(pathlib.Path(args.raw), pathlib.Path(args.out),
+                      input_encoding=args.input_encoding)
     print(json.dumps({k: manifest[k] for k in
                       ('examples', 'exclusions', 'vocab_sizes')}, indent=1))
 
