@@ -4,6 +4,8 @@
 # pylint: disable=missing-function-docstring,redefined-outer-name
 
 import json
+import sys
+import types
 
 import pytest
 
@@ -135,3 +137,24 @@ def test_manifest_splits_and_hidden_metadata(make_collector, tmp_path):
     report = collector.coverage(tmp_path, collect.episodes)
     assert report['transitions'] >= 25
     assert not collector.validate_raw(tmp_path)['problems']
+
+
+def test_peak_process_rss_mib_platforms(monkeypatch):
+    fake_resource = types.SimpleNamespace(
+        RUSAGE_SELF=0,
+        getrusage=lambda _who: types.SimpleNamespace(ru_maxrss=2048),
+    )
+    monkeypatch.setattr(collector, 'resource', fake_resource)
+
+    monkeypatch.setattr(sys, 'platform', 'linux')
+    assert collector._peak_process_rss_mib() == 2.0  # pylint: disable=protected-access
+
+    monkeypatch.setattr(sys, 'platform', 'win32')
+    assert collector._peak_process_rss_mib() is None  # pylint: disable=protected-access
+
+    monkeypatch.setattr(sys, 'platform', 'darwin')
+    assert collector._peak_process_rss_mib() is None  # pylint: disable=protected-access
+
+    monkeypatch.setattr(sys, 'platform', 'linux')
+    monkeypatch.setattr(collector, 'resource', None)
+    assert collector._peak_process_rss_mib() is None  # pylint: disable=protected-access

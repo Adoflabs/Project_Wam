@@ -37,8 +37,12 @@ import hashlib
 import json
 import pathlib
 import random
-import resource
+try:
+    import resource
+except ImportError:
+    resource = None
 import socket
+import sys
 import time
 import traceback
 import uuid
@@ -658,6 +662,14 @@ _PLACEHOLDERS = {w[k] for w in scenarios.WORDINGS.values()
                  for k in ('pick_service', 'pick_doctor', 'pick_date')}
 
 
+def _peak_process_rss_mib() -> float | None:
+    """Returns peak Python process RSS on Linux, if available."""
+    if sys.platform != 'linux' or resource is None:
+        return None
+    peak_rss_kib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return round(peak_rss_kib / 1024, 1)
+
+
 def coverage(out_dir: pathlib.Path,
              episodes: Sequence[Episode]) -> dict[str, Any]:
     """Counts behaviours, outcomes and data quality across the dataset."""
@@ -705,8 +717,8 @@ def coverage(out_dir: pathlib.Path,
                               if e.branch}),
         'refused_attempts': refusals,
         'raw_bytes': size,
-        'max_rss_mb': round(resource.getrusage(
-            resource.RUSAGE_SELF).ru_maxrss / 1024, 1),
+        # MiB of peak Python process RSS on Linux (not total browser memory).
+        'max_rss_mb': _peak_process_rss_mib(),
     }
 
 
