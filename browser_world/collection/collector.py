@@ -520,8 +520,11 @@ def _explore(observation: observer.Observation, goal: scenarios.Goal,
     if not offers:
         return None
     offer = rng.choice(offers)
-    text = rng.choice(_text_pool(goal, rng)) if offer.kind == executor.TYPE \
+    text = (
+        rng.choice(_text_pool(goal, rng))
+        if offer.kind == executor.TYPE
         else None
+    )
     return offer.action(text), 'explore'
 
 

@@ -75,23 +75,16 @@ def _validate_byte_ids(ids: object) -> None:
             )
 
 
-def _step_tensors(example: Example) -> dict[str, torch.Tensor]:
-    """Converts one curated example to unpadded tensors."""
-    elements = example['inputs']['state']['elements']
-    action = example['inputs']['action']
-    targets = example['targets']
-    per = targets['elements']
-    new = targets['new']
+def input_tensors(
+    state: Mapping[str, Any],
+    action: Mapping[str, Any],
+) -> dict[str, torch.Tensor]:
+    """Converts encoded pre-action state and action dicts to CPU tensors."""
+    elements = state['elements']
 
     def column(rows: Sequence[Mapping[str, Any]], key: str,
                dtype: torch.dtype) -> torch.Tensor:
         return torch.tensor([row[key] for row in rows], dtype=dtype)
-
-    def new_column(key: str, width: int | None = None) -> torch.Tensor:
-        if new:
-            return torch.tensor([row[key] for row in new], dtype=torch.long)
-        return torch.zeros((0,) if width is None else (0, width),
-                           dtype=torch.long)
 
     def byte_matrix(key: str) -> torch.Tensor:
         if not elements:
@@ -114,27 +107,13 @@ def _step_tensors(example: Example) -> dict[str, torch.Tensor]:
         'box': column(elements, 'box', torch.float),
         'box_mask': column(elements, 'box_mask', torch.bool),
         'parent': column(elements, 'parent', torch.long),
-        'page': torch.tensor(example['inputs']['state']['page'],
-                             dtype=torch.float),
+        'page': torch.tensor(state['page'], dtype=torch.float),
         'action_kind': torch.tensor(action['kind']),
         'action_target': torch.tensor(action['target']),
         'action_text_chars': torch.tensor(action['text_chars']),
         'action_checked': torch.tensor(action['checked']),
         'action_scroll': torch.tensor(action['scroll'], dtype=torch.float),
         'action_pointer': torch.tensor(action['pointer'], dtype=torch.float),
-        't_known': column(per, 'known', torch.bool),
-        't_changed': column(per, 'changed', torch.float),
-        't_removed': column(per, 'removed', torch.float),
-        't_matched': column(per, 'matched', torch.bool),
-        't_next_states': column(per, 'next_states', torch.float),
-        't_value_source': column(per, 'value_source', torch.long),
-        't_value_mask': column(per, 'value_mask', torch.bool),
-        't_box_delta': column(per, 'box_delta', torch.float),
-        't_box_mask': column(per, 'box_mask', torch.bool),
-        't_outcomes': torch.tensor(targets['outcomes'], dtype=torch.float),
-        't_new_role': new_column('role'),
-        't_new_words': new_column('name_words', schema.MAX_NAME_WORDS),
-        't_new_parent': new_column('parent_before'),
     }
     has_action_bytes = 'text_bytes' in action
     any_elem_bytes = any(
@@ -157,6 +136,78 @@ def _step_tensors(example: Example) -> dict[str, torch.Tensor]:
         step['value_bytes'] = byte_matrix('value_bytes')
         step['action_text_bytes'] = torch.tensor(
             action['text_bytes'], dtype=torch.long)
+    return step
+
+
+def inference_batch(
+    state: Mapping[str, Any],
+    action: Mapping[str, Any],
+) -> dict[str, torch.Tensor]:
+    """Builds a B=1, K=1 tensor batch for live pre-action inference."""
+    step = input_tensors(state, action)
+    num_elements = step['role'].shape[0]
+    if num_elements == 0:
+        raise ValueError('Cannot run inference on an empty observation.')
+    if 'name_bytes' in step:
+        step['name_bytes'] = _pad_2d(
+            step['name_bytes'],
+            num_elements,
+            max(1, step['name_bytes'].shape[1]),
+            byte_encoding.BYTE_PAD_ID,
+        )
+        step['value_bytes'] = _pad_2d(
+            step['value_bytes'],
+            num_elements,
+            max(1, step['value_bytes'].shape[1]),
+            byte_encoding.BYTE_PAD_ID,
+        )
+        step['action_text_bytes'] = _pad(
+            step['action_text_bytes'],
+            max(1, step['action_text_bytes'].shape[0]),
+            byte_encoding.BYTE_PAD_ID,
+        )
+    step['element_mask'] = torch.ones((num_elements,), dtype=torch.bool)
+    return {
+        key: value.unsqueeze(0).unsqueeze(0)
+        for key, value in step.items()
+    }
+
+
+def _step_tensors(example: Example) -> dict[str, torch.Tensor]:
+    """Converts one curated example to unpadded tensors."""
+    step = input_tensors(
+        example['inputs']['state'],
+        example['inputs']['action'],
+    )
+    targets = example['targets']
+    per = targets['elements']
+    new = targets['new']
+
+    def column(rows: Sequence[Mapping[str, Any]], key: str,
+               dtype: torch.dtype) -> torch.Tensor:
+        return torch.tensor([row[key] for row in rows], dtype=dtype)
+
+    def new_column(key: str, width: int | None = None) -> torch.Tensor:
+        if new:
+            return torch.tensor([row[key] for row in new], dtype=torch.long)
+        return torch.zeros((0,) if width is None else (0, width),
+                           dtype=torch.long)
+
+    step.update({
+        't_known': column(per, 'known', torch.bool),
+        't_changed': column(per, 'changed', torch.float),
+        't_removed': column(per, 'removed', torch.float),
+        't_matched': column(per, 'matched', torch.bool),
+        't_next_states': column(per, 'next_states', torch.float),
+        't_value_source': column(per, 'value_source', torch.long),
+        't_value_mask': column(per, 'value_mask', torch.bool),
+        't_box_delta': column(per, 'box_delta', torch.float),
+        't_box_mask': column(per, 'box_mask', torch.bool),
+        't_outcomes': torch.tensor(targets['outcomes'], dtype=torch.float),
+        't_new_role': new_column('role'),
+        't_new_words': new_column('name_words', schema.MAX_NAME_WORDS),
+        't_new_parent': new_column('parent_before'),
+    })
     return step
 
 

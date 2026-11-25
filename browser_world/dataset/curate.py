@@ -38,6 +38,7 @@ import re
 import subprocess
 from typing import Any
 
+from browser_world.interaction import executor
 from browser_world.interaction import observer
 from browser_world.dataset import byte_encoding
 from browser_world.dataset import schema
@@ -69,7 +70,7 @@ def load(raw_dir: pathlib.Path
          ) -> tuple[dict[str, Any] | None, dict[str, list[dict[str, Any]]]]:
     """Returns the manifest (None if missing) and the records per split."""
     manifest_path = raw_dir / 'manifest.json'
-    manifest = (json.loads(manifest_path.read_text())
+    manifest = (json.loads(manifest_path.read_text(encoding='utf-8'))
                 if manifest_path.exists() else None)
     records = {}
     for split in SPLITS:
@@ -490,29 +491,60 @@ def encode_state(observation: observer.Observation,
     return {'elements': elements, 'page': page}
 
 
+def encode_proposed_action(
+    action: executor.Action,
+    target_index: int,
+    pointer: tuple[float, float],
+    motion: observer.Motion,
+    vocabs: Vocabs,
+    *,
+    input_encoding: str = 'legacy',
+) -> dict[str, Any]:
+    """Encodes a proposed action from pre-action state and cursor position."""
+    _validate_input_encoding(input_encoding)
+    encoded: dict[str, Any] = {
+        'kind': schema.ACTION_KINDS.index(action.kind),
+        'target': target_index,
+        'text_chars': vocabs.text_chars(action.text),
+        'checked': (
+            0 if action.checked is None
+            else 1 + int(action.checked)
+        ),
+        'scroll': (action.scroll_y or 0.0) / motion.viewport_height,
+        'pointer': [
+            pointer[0] / motion.viewport_width,
+            pointer[1] / motion.viewport_height,
+        ],
+    }
+    if input_encoding == 'utf8_bytes_v1':
+        encoded['text_bytes'] = byte_encoding.encode_bytes(action.text)
+    return encoded
+
+
 def encode_action(record: Mapping[str, Any], vocabs: Vocabs,
                   motion: observer.Motion,
                   *,
                   input_encoding: str = 'legacy') -> dict[str, Any]:
     """Returns the action's input features, with the agent's own pointer
     position at the start of the action (known before acting)."""
-    _validate_input_encoding(input_encoding)
-    action, target = record['action'], record['target']
+    action_dict, target = record['action'], record['target']
+    action = executor.Action(
+        kind=action_dict['kind'],
+        target=action_dict.get('target'),
+        text=action_dict.get('text'),
+        checked=action_dict.get('checked'),
+        scroll_y=action_dict.get('scroll_y'),
+    )
     start = record['result']['pointer_path'][0] if record['result'][
         'pointer_path'] else {'x': 0.0, 'y': 0.0}
-    checked = action.get('checked')
-    encoded: dict[str, Any] = {
-        'kind': schema.ACTION_KINDS.index(action['kind']),
-        'target': target['index'] if target else -1,
-        'text_chars': vocabs.text_chars(action.get('text')),
-        'checked': 0 if checked is None else 1 + int(checked),
-        'scroll': (action.get('scroll_y') or 0.0) / motion.viewport_height,
-        'pointer': [start['x'] / motion.viewport_width,
-                    start['y'] / motion.viewport_height],
-    }
-    if input_encoding == 'utf8_bytes_v1':
-        encoded['text_bytes'] = byte_encoding.encode_bytes(action.get('text'))
-    return encoded
+    return encode_proposed_action(
+        action=action,
+        target_index=target['index'] if target else -1,
+        pointer=(float(start['x']), float(start['y'])),
+        motion=motion,
+        vocabs=vocabs,
+        input_encoding=input_encoding,
+    )
 
 
 def _dropdown_index(observation: observer.Observation,

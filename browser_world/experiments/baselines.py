@@ -82,10 +82,12 @@ def predict_action_copy(example: Example) -> Prediction:
 
 
 def _f1(true_pos: int, false_pos: int, false_neg: int) -> dict[str, float]:
-    precision = true_pos / (true_pos + false_pos) if true_pos + false_pos \
-        else 0.0
-    recall = true_pos / (true_pos + false_neg) if true_pos + false_neg \
-        else 0.0
+    precision = (
+        true_pos / (true_pos + false_pos) if true_pos + false_pos else 0.0
+    )
+    recall = (
+        true_pos / (true_pos + false_neg) if true_pos + false_neg else 0.0
+    )
     f1 = (2 * precision * recall / (precision + recall)
           if precision + recall else 0.0)
     return {'precision': round(precision, 3), 'recall': round(recall, 3),

@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WAM — World Action Model Workspace</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #161d24;
+    --border: #27323f;
+    --text: #e6edf3;
+    --muted: #8b98a5;
+    --accent: #3b82f6;
+    --good: #22c55e;
+    --warn: #f59e0b;
+    --bad: #ef4444;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+  }
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    padding: 12px;
+    gap: 8px;
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+    flex-shrink: 0;
+  }
+  .brand { font-size: 16px; font-weight: 700; }
+  .sub { font-size: 11px; color: var(--muted); }
+  .badges { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .pill {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: #1f2933;
+    color: var(--text);
+  }
+  .pill.good { background: rgba(34, 197, 94, 0.18); color: #86efac; }
+  .pill.warn { background: rgba(245, 158, 11, 0.18); color: #fcd34d; }
+  .pill.bad { background: rgba(239, 68, 68, 0.18); color: #fca5a5; }
+  .cap-bar {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .banner {
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    color: #fecaca;
+    border-radius: 6px;
+    padding: 6px 9px;
+    font-size: 12px;
+    display: none;
+    flex-shrink: 0;
+  }
+  .banner.visible { display: block; }
+  .transcript {
+    flex: 1;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 140px;
+  }
+  .msg {
+    padding: 7px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.4;
+    border: 1px solid var(--border);
+    background: #11171d;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .msg.user { border-left: 3px solid var(--accent); }
+  .msg.error { border-left: 3px solid var(--bad); color: #fecaca; }
+  .msg.event { border-left: 3px solid var(--good); }
+  .msg-head {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    margin-bottom: 2px;
+  }
+  .decision-panel {
+    display: none;
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 10px;
+    background: #121a23;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 280px;
+    overflow-y: auto;
+    flex-shrink: 0;
+  }
+  .decision-panel.visible { display: flex; }
+  .cand-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 120px;
+    overflow-y: auto;
+  }
+  .cand-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .cand-row.rec { border-color: var(--warn); }
+  .span-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: 11px;
+    font-family: var(--mono);
+  }
+  .span-row input {
+    width: 64px;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 6px;
+  }
+  .telemetry {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  form#composer {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  textarea {
+    width: 100%;
+    resize: vertical;
+    min-height: 44px;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 9px;
+    font-family: inherit;
+    font-size: 13px;
+  }
+  .controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    padding: 5px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.secondary { background: #26313d; color: var(--text); }
+  button.good { background: #15803d; color: #fff; }
+  button.warn { background: #b45309; }
+  button.danger { background: #b91c1c; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  select {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div>
+      <div class="brand">WAM — World Action Model</div>
+      <div class="sub">Live Experience-Learning Workspace &middot; Chromium on right</div>
+    </div>
+    <div class="badges">
+      <span id="nl-pill" class="pill bad">New WAM runtime not initialized</span>
+      <span id="mode-pill" class="pill">teach</span>
+      <span id="rev-pill" class="pill">rev 0</span>
+      <span id="status-pill" class="pill">idle</span>
+    </div>
+  </header>
+
+  <div id="cap-bar" class="cap-bar">
+    <span id="cap-params">Custom model parameters: -</span>
+    <span id="cap-dyn">Dynamics: not loaded</span>
+    <span id="cap-teach">Teaching: not ready</span>
+    <span id="cap-sup">Decision supervision: none</span>
+  </div>
+
+  <div id="error-banner" class="banner" role="alert"></div>
+
+  <div id="transcript" class="transcript">
+    <div class="msg wam" data-msg-id="welcome">
+      <div class="msg-head">WAM · workspace</div>
+      <div>New WAM runtime not initialized</div>
+    </div>
+  </div>
+
+  <div id="decision-panel" class="decision-panel">
+    <div class="msg-head" id="decision-title">Pending Decision</div>
+    <div id="decision-instruction" class="msg"></div>
+    <div class="span-row">
+      <span>Highlight span:</span>
+      <input id="span-start" type="number" min="0" placeholder="start">
+      <input id="span-end" type="number" min="0" placeholder="end">
+      <button id="btn-use-selection" class="secondary" type="button">Use Text Selection</button>
+      <span>Goal:</span>
+      <select id="fb-goal">
+        <option value="">unset</option>
+        <option value="true">satisfied</option>
+        <option value="false">not satisfied</option>
+      </select>
+      <span>Outcome:</span>
+      <select id="fb-outcome">
+        <option value="">ongoing</option>
+        <option value="success">success</option>
+        <option value="failure">failure</option>
+        <option value="incomplete">incomplete</option>
+      </select>
+      <button id="btn-finish-only" class="secondary" type="button">Finish Task</button>
+    </div>
+    <div id="cand-list" class="cand-list"></div>
+  </div>
+
+  <div class="telemetry">
+    <span id="timings">obs: - | inf: - | exec: -</span>
+    <span id="env-url">env: -</span>
+  </div>
+
+  <form id="composer">
+    <textarea
+      id="instruction"
+      aria-label="Instruction"
+      placeholder="Enter natural-language instruction..."
+      rows="2"
+    ></textarea>
+    <div class="controls">
+      <button id="send" type="submit">Send</button>
+      <select id="mode-select" aria-label="Runtime mode">
+        <option value="teach">Teach mode</option>
+        <option value="autonomous">Experimental autonomous</option>
+      </select>
+      <button id="btn-pause" class="warn" type="button">Pause</button>
+      <button id="btn-stop" class="danger" type="button">Stop</button>
+      <button id="btn-reset" class="secondary" type="button">Reset</button>
+    </div>
+  </form>
+</div>
+
+<script>
+let pollInFlight = false;
+let submitInFlight = false;
+let currentStatus = 'idle';
+let lastDecisionId = null;
+let rejectedSet = new Set();
+const renderedIds = new Set(['welcome']);
+const renderedEvents = new Set();
+
+const transcriptEl = document.getElementById('transcript');
+const composer = document.getElementById('composer');
+const instruction = document.getElementById('instruction');
+const sendBtn = document.getElementById('send');
+const errorBannerEl = document.getElementById('error-banner');
+const nlPill = document.getElementById('nl-pill');
+const modePill = document.getElementById('mode-pill');
+const revPill = document.getElementById('rev-pill');
+const statusEl = document.getElementById('status-pill');
+const timingsEl = document.getElementById('timings');
+const envUrlEl = document.getElementById('env-url');
+const btnPause = document.getElementById('btn-pause');
+const modeSelect = document.getElementById('mode-select');
+const decisionPanel = document.getElementById('decision-panel');
+const decisionTitle = document.getElementById('decision-title');
+const decisionInst = document.getElementById('decision-instruction');
+const candListEl = document.getElementById('cand-list');
+const spanStartEl = document.getElementById('span-start');
+const spanEndEl = document.getElementById('span-end');
+const fbGoalEl = document.getElementById('fb-goal');
+const fbOutcomeEl = document.getElementById('fb-outcome');
+
+function showError(msg) {
+  if (msg) {
+    errorBannerEl.textContent = msg;
+    errorBannerEl.classList.add('visible');
+  } else {
+    errorBannerEl.textContent = '';
+    errorBannerEl.classList.remove('visible');
+  }
+}
+
+function appendEntry(id, role, kind, text, cls) {
+  if (renderedIds.has(id)) return;
+  renderedIds.add(id);
+  const el = document.createElement('div');
+  el.className = `msg ${cls || role} ${kind}`;
+  el.dataset.msgId = id;
+
+  const head = document.createElement('div');
+  head.className = 'msg-head';
+  head.textContent = `${role} · ${kind}`;
+
+  const body = document.createElement('div');
+  body.textContent = text;
+
+  el.appendChild(head);
+  el.appendChild(body);
+  transcriptEl.appendChild(el);
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+function formatEventText(ev) {
+  if (ev.event_type === 'prediction') {
+    return (
+      `decision=${ev.decision_id} rev=${ev.model_revision} ` +
+      `candidates=${ev.candidate_count} rec=${ev.recommended_candidate}`
+    );
+  }
+  if (ev.event_type === 'actual_outcome') {
+    const ch = (ev.observed_changes || []).join('; ') || 'none';
+    return (
+      `decision=${ev.decision_id} source=${ev.selection_source} ` +
+      `ok=${ev.execution_succeeded} changes=[${ch}]`
+    );
+  }
+  if (ev.event_type === 'weight_update') {
+    return (
+      `status=${ev.status} rev=${ev.model_revision_before}->` +
+      `${ev.model_revision_after} loss=${Number(ev.loss_before || 0).toFixed(4)}` +
+      `->${Number(ev.loss_after || 0).toFixed(4)} ` +
+      `grad=${Number(ev.gradient_norm || 0).toFixed(4)} ` +
+      `upd=${Number(ev.parameter_update_norm || 0).toFixed(5)}`
+    );
+  }
+  return JSON.stringify(ev);
+}
+
+async function sendFeedback(approvedId, outcomeOnly) {
+  if (!lastDecisionId) return;
+  const sVal = spanStartEl.value === '' ? null : Number(spanStartEl.value);
+  const eVal = spanEndEl.value === '' ? null : Number(spanEndEl.value);
+  const span = (sVal !== null && eVal !== null) ? [sVal, eVal] : null;
+  const goalVal = fbGoalEl.value === '' ? null : (fbGoalEl.value === 'true');
+  const outVal = fbOutcomeEl.value || null;
+  if (outcomeOnly && !outVal) {
+    showError('Select an outcome (success, failure, or incomplete) first.');
+    return;
+  }
+  const res = await fetch('/api/feedback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      decision_id: lastDecisionId,
+      approved_candidate_id: outcomeOnly ? null : approvedId,
+      rejected_candidate_ids: Array.from(rejectedSet),
+      literal_span: span,
+      goal_satisfied: goalVal,
+      constraint_violated: null,
+      terminal_outcome: outVal,
+    }),
+  });
+  if (!res.ok) {
+    const data = await res.json();
+    showError(data.error || 'Feedback rejected.');
+  } else {
+    showError('');
+    rejectedSet.clear();
+    spanStartEl.value = '';
+    spanEndEl.value = '';
+    fbGoalEl.value = '';
+    fbOutcomeEl.value = '';
+  }
+  await pollState();
+}
+
+function renderPendingDecision(pd) {
+  if (!pd) {
+    lastDecisionId = null;
+    decisionPanel.classList.remove('visible');
+    return;
+  }
+  if (lastDecisionId === pd.decision_id) return;
+  lastDecisionId = pd.decision_id;
+  rejectedSet.clear();
+
+  decisionPanel.classList.add('visible');
+  decisionTitle.textContent =
+    `Pending Decision ${pd.decision_id} (rev ${pd.model_revision})`;
+  decisionInst.textContent = pd.instruction || '';
+  candListEl.replaceChildren();
+
+  const cands = pd.candidates || [];
+  for (const c of cands) {
+    const row = document.createElement('div');
+    const isRec = c.candidate_id === pd.recommended_candidate_id;
+    row.className = 'cand-row' + (isRec ? ' rec' : '');
+
+    const label = document.createElement('span');
+    const propStr = c.proposal_logit === null
+      ? 'untrained/n/a'
+      : c.proposal_logit.toFixed(3);
+    const valStr = c.decision_score === null
+      ? 'untrained'
+      : c.decision_score.toFixed(3);
+    const txtPart = c.text !== null ? ` "${c.text}"` : '';
+    label.textContent =
+      `#${c.candidate_id}${isRec ? ' [REC]' : ''} ${c.kind}${txtPart} -> ` +
+      `${c.target_name} | prop=${propStr} | val=${valStr}`;
+
+    const btns = document.createElement('span');
+    const appBtn = document.createElement('button');
+    appBtn.type = 'button';
+    appBtn.className = 'good';
+    appBtn.textContent = 'Approve';
+    appBtn.addEventListener('click', () => sendFeedback(c.candidate_id, false));
+
+    const rejBtn = document.createElement('button');
+    rejBtn.type = 'button';
+    rejBtn.className = 'danger';
+    rejBtn.style.marginLeft = '4px';
+    rejBtn.textContent = 'Reject';
+    rejBtn.addEventListener('click', () => {
+      rejectedSet.add(c.candidate_id);
+      rejBtn.disabled = true;
+    });
+
+    btns.appendChild(appBtn);
+    btns.appendChild(rejBtn);
+    row.appendChild(label);
+    row.appendChild(btns);
+    candListEl.appendChild(row);
+  }
+}
+
+function renderState(s) {
+  const r = s.readiness || {};
+  const cap = r.capabilities || {};
+  const sup = cap.supervision_counts || {};
+  currentStatus = s.execution_status || 'idle';
+
+  nlPill.textContent = r.nl_ready
+    ? 'wam_runtime: ready'
+    : (r.reason || 'New WAM runtime not initialized');
+  nlPill.className = 'pill ' + (r.nl_ready ? 'good' : 'bad');
+
+  modePill.textContent = s.mode || 'teach';
+  modeSelect.value = s.mode || 'teach';
+  revPill.textContent = `rev ${cap.model_revision ?? 0}`;
+
+  document.getElementById('cap-params').textContent =
+    `Custom model parameters: ${(r.param_count || 0).toLocaleString()}`;
+  document.getElementById('cap-dyn').textContent =
+    r.dynamics_loaded ? 'Dynamics checkpoint loaded' : 'Dynamics: not loaded';
+  document.getElementById('cap-teach').textContent =
+    r.teaching_ready ? 'Teaching mode ready' : 'Teaching: not ready';
+  document.getElementById('cap-sup').textContent =
+    `Supervision: prop=${sup.proposal ?? 0} copy=${sup.copy ?? 0} ` +
+    `sat=${sup.goal_satisfaction ?? 0} ret=${sup.return ?? 0}`;
+
+  statusEl.textContent = currentStatus;
+  statusEl.className = 'pill ' + (
+    currentStatus === 'running' ? 'warn' :
+    ((currentStatus === 'failed' || currentStatus === 'goal_not_achieved' || currentStatus === 'unsupported_instruction') ? 'bad' :
+    (currentStatus === 'goal_achieved' ? 'good' : ''))
+  );
+  btnPause.textContent = currentStatus === 'paused' ? 'Resume' : 'Pause';
+
+  const t = s.timings || {};
+  timingsEl.textContent =
+    `obs: ${t.observe_ms ?? '-'}ms | inf: ${t.inference_ms ?? '-'}ms | exec: ${t.execute_ms ?? '-'}ms`;
+  envUrlEl.textContent = `env: ${s.environment_url || '-'}`;
+
+  if (s.error) {
+    showError(s.error);
+  }
+
+  const msgs = s.runtime_messages || [];
+  if (msgs.length === 0 && renderedIds.size > 1) {
+    for (const child of Array.from(transcriptEl.children)) {
+      if (child.dataset.msgId !== 'welcome') {
+        renderedIds.delete(child.dataset.msgId);
+        child.remove();
+      }
+    }
+    renderedEvents.clear();
+  }
+  for (const m of msgs) appendEntry(m.id, m.role, m.kind, m.text, m.role);
+
+  for (const ev of (s.events || [])) {
+    const evId = `ev-${ev.event_type}-${ev.timestamp_ms}-${ev.decision_id || ev.learning_sample_id || ''}`;
+    if (!renderedEvents.has(evId)) {
+      renderedEvents.add(evId);
+      appendEntry(evId, 'wam', ev.event_type, formatEventText(ev), 'event');
+    }
+  }
+
+  renderPendingDecision(s.pending_decision || null);
+}
+
+async function pollState() {
+  if (pollInFlight) return;
+  pollInFlight = true;
+  try {
+    const res = await fetch('/api/state', { cache: 'no-store' });
+    if (res.ok) renderState(await res.json());
+  } catch (_) {
+    // Ignore transient polling errors.
+  } finally {
+    pollInFlight = false;
+  }
+}
+
+async function submitInstruction() {
+  if (submitInFlight) return;
+  const text = instruction.value;
+  if (!text.trim()) {
+    showError('Instruction cannot be empty.');
+    return;
+  }
+  submitInFlight = true;
+  sendBtn.disabled = true;
+  try {
+    const res = await fetch('/api/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instruction: text }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showError(data.error || 'Request rejected.');
+    } else {
+      showError('');
+      instruction.value = '';
+    }
+    await pollState();
+  } finally {
+    submitInFlight = false;
+    sendBtn.disabled = false;
+  }
+}
+
+composer.addEventListener('submit', (e) => {
+  e.preventDefault();
+  submitInstruction();
+});
+
+instruction.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    submitInstruction();
+  }
+});
+
+modeSelect.addEventListener('change', async () => {
+  const res = await fetch('/api/mode', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: modeSelect.value }),
+  });
+  if (!res.ok) {
+    const data = await res.json();
+    showError(data.error || 'Mode change rejected.');
+  } else {
+    showError('');
+  }
+  await pollState();
+});
+
+document.getElementById('btn-use-selection').addEventListener('click', () => {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return;
+  const text = decisionInst.textContent || '';
+  const picked = sel.toString();
+  const idx = text.indexOf(picked);
+  if (picked && idx >= 0) {
+    spanStartEl.value = String(idx);
+    spanEndEl.value = String(idx + picked.length);
+  }
+});
+
+document.getElementById('btn-finish-only').addEventListener('click', () => {
+  sendFeedback(null, true);
+});
+
+btnPause.addEventListener('click', async () => {
+  const path = currentStatus === 'paused' ? '/api/resume' : '/api/pause';
+  const res = await fetch(path, { method: 'POST' });
+  if (!res.ok) showError((await res.json()).error || 'Pause/Resume failed.');
+  await pollState();
+});
+
+document.getElementById('btn-stop').addEventListener('click', async () => {
+  const res = await fetch('/api/stop', { method: 'POST' });
+  if (!res.ok) showError((await res.json()).error || 'Stop failed.');
+  await pollState();
+});
+
+document.getElementById('btn-reset').addEventListener('click', async () => {
+  const res = await fetch('/api/reset', { method: 'POST' });
+  if (!res.ok) showError((await res.json()).error || 'Reset failed.');
+  else showError('');
+  await pollState();
+});
+
+pollState();
+setInterval(pollState, 500);
+</script>
+</body>
+</html>
