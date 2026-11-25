@@ -24,7 +24,7 @@ steer collection; none of it is model input.
 
 Usage:
 
-  python -m browser_world.collector --transitions 50 --out data/raw/e04/pilot
+  python -m browser_world.collection.collector --transitions 50 --out data/raw/e04/pilot
 """
 
 from __future__ import annotations
@@ -50,14 +50,14 @@ from typing import Any
 
 from playwright import sync_api
 
-from browser_world import booking
-from browser_world import executor
-from browser_world import goal_policy
-from browser_world import live_demo
-from browser_world import observer
-from browser_world import recorder
-from browser_world import scenarios
-from browser_world import server
+from browser_world.environment import booking
+from browser_world.interaction import executor
+from browser_world.collection import goal_policy
+from browser_world.diagnostics import live_demo
+from browser_world.interaction import observer
+from browser_world.collection import recorder
+from browser_world.environment import scenarios
+from browser_world.environment import server
 
 GOAL = 'goal'
 NOISY = 'noisy'

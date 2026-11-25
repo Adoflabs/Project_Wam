@@ -6,10 +6,10 @@ observation, a wireframe drawn only from the observation, and what changed.
 
 Usage:
 
-  python -m browser_world.live_demo
+  python -m browser_world.diagnostics.live_demo
   # Chromium opens on the booking site; open http://127.0.0.1:7801 to watch.
 
-  python -m browser_world.live_demo --record frames.json
+  python -m browser_world.diagnostics.live_demo --record frames.json
   # Headless: runs a scripted booking and saves every frame for playback.
 """
 
@@ -30,10 +30,10 @@ from starlette import responses
 from starlette import routing
 import uvicorn
 
-from browser_world import booking
-from browser_world import delta
-from browser_world import observer
-from browser_world import server
+from browser_world.environment import booking
+from browser_world.diagnostics import delta
+from browser_world.interaction import observer
+from browser_world.environment import server
 
 _VIEWER_HTML = pathlib.Path(__file__).parent / 'static' / 'viewer.html'
 _START_TIMEOUT_S = 10

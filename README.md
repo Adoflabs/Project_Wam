@@ -16,9 +16,9 @@ Browser world model v0 (BW0). The locked plan is in `docs/BW0-spec.md`.
 
 ```bash
 pip install -r requirements.txt
-python -m browser_world.server --port 7800   # open http://127.0.0.1:7800/?session=demo
-python -m browser_world.live_demo            # Chromium window + live viewer at http://127.0.0.1:7801
-python -m browser_world.inspect_page         # observe the booking page once
+python -m browser_world.environment.server --port 7800   # open http://127.0.0.1:7800/?session=demo
+python -m browser_world.diagnostics.live_demo            # Chromium window + live viewer at http://127.0.0.1:7801
+python -m browser_world.diagnostics.inspect_page         # observe the booking page once
 python -m pytest                             # 52 tests: rules, API, browser E0.1 acceptance, observer, delta
 pylint browser_world tests                   # Google-style lint config in .pylintrc
 ```

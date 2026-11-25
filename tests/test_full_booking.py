@@ -9,8 +9,8 @@ is off-screen, it scrolls. No selectors, no direct state changes.
 # Test functions need no docstrings, and pytest injects fixtures by name.
 # pylint: disable=missing-function-docstring,redefined-outer-name
 
-from browser_world import executor
-from browser_world import recorder
+from browser_world.interaction import executor
+from browser_world.collection import recorder
 from tests import run_checks
 
 # The goal, as (kind, accessible name, text or desired checked state).

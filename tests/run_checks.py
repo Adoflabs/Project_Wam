@@ -5,7 +5,7 @@ from __future__ import annotations
 import pathlib
 from typing import Any
 
-from browser_world import recorder
+from browser_world.collection import recorder
 
 
 def assert_one_continuous_run(raw_dir: pathlib.Path,

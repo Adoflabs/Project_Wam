@@ -9,12 +9,12 @@ import types
 
 import pytest
 
-from browser_world import collector
-from browser_world import executor
-from browser_world import goal_policy
-from browser_world import observer
-from browser_world import recorder
-from browser_world import scenarios
+from browser_world.collection import collector
+from browser_world.interaction import executor
+from browser_world.collection import goal_policy
+from browser_world.interaction import observer
+from browser_world.collection import recorder
+from browser_world.environment import scenarios
 
 
 @pytest.fixture

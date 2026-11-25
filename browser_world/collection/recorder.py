@@ -38,8 +38,8 @@ import uuid
 
 from playwright import sync_api
 
-from browser_world import executor
-from browser_world import observer
+from browser_world.interaction import executor
+from browser_world.interaction import observer
 
 # Record layout history:
 #   1  before/action/after, no run identity (diagnostic only).

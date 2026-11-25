@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from browser_world import observer
+from browser_world.interaction import observer
 
 # Boxes that move less than this many CSS pixels count as unchanged.
 _MOVE_TOLERANCE_PX = 1.0

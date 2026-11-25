@@ -19,8 +19,8 @@ import json
 import pathlib
 from typing import Any
 
-from browser_world import curate
-from browser_world import training_data
+from browser_world.dataset import curate
+from browser_world.dataset import training_data
 
 Example = Mapping[str, Any]
 Prediction = dict[str, Any]

@@ -13,11 +13,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 import dataclasses
 
-from browser_world import booking
-from browser_world import executor
-from browser_world import observer
-from browser_world import recorder
-from browser_world import scenarios
+from browser_world.environment import booking
+from browser_world.interaction import executor
+from browser_world.interaction import observer
+from browser_world.collection import recorder
+from browser_world.environment import scenarios
 
 DONE = 'booked'
 CONFLICT = 'conflict'

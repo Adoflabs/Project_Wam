@@ -12,10 +12,10 @@ import pathlib
 
 import pytest
 
-from browser_world import booking
-from browser_world import executor
-from browser_world import observer
-from browser_world import recorder
+from browser_world.environment import booking
+from browser_world.interaction import executor
+from browser_world.interaction import observer
+from browser_world.collection import recorder
 
 
 def _choose(observation: observer.Observation, kind: str,

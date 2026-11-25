@@ -11,11 +11,11 @@ observer sees.
 
 Run on your own computer, from the repository root:
 
-  python -m browser_world.watch_agent
+  python -m browser_world.diagnostics.watch_agent
   # Watch the Chromium window; open http://127.0.0.1:7801 for the viewer.
 
-  python -m browser_world.watch_agent --episodes 6 --families civic-wizard
-  python -m browser_world.watch_agent --headless   # no window, for checks
+  python -m browser_world.diagnostics.watch_agent --episodes 6 --families civic-wizard
+  python -m browser_world.diagnostics.watch_agent --headless   # no window, for checks
 """
 
 from __future__ import annotations
@@ -27,14 +27,14 @@ import uuid
 
 from playwright import sync_api
 
-from browser_world import booking
-from browser_world import executor
-from browser_world import goal_policy
-from browser_world import live_demo
-from browser_world import observer
-from browser_world import recorder
-from browser_world import scenarios
-from browser_world import server
+from browser_world.environment import booking
+from browser_world.interaction import executor
+from browser_world.collection import goal_policy
+from browser_world.diagnostics import live_demo
+from browser_world.interaction import observer
+from browser_world.collection import recorder
+from browser_world.environment import scenarios
+from browser_world.environment import server
 
 # Slow enough to follow by eye.
 WATCH_SPEED = executor.Speed(move_steps=30, move_ms=700.0, key_delay_ms=90.0)

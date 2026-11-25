@@ -27,7 +27,7 @@ from typing import Any
 import torch
 from torch.utils import data as torch_data
 
-from browser_world import curate
+from browser_world.dataset import curate
 
 Example = Mapping[str, Any]
 

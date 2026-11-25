@@ -21,7 +21,7 @@ headings, backend truth), never from booking rules written here.
 
 Usage:
 
-  python -m browser_world.curate --raw data/raw/e04/main \\
+  python -m browser_world.dataset.curate --raw data/raw/e04/main \\
       --out data/curated/c01
 """
 
@@ -38,9 +38,9 @@ import re
 import subprocess
 from typing import Any
 
-from browser_world import observer
-from browser_world import recorder
-from browser_world import scenarios
+from browser_world.interaction import observer
+from browser_world.collection import recorder
+from browser_world.environment import scenarios
 
 SUPPORTED_SCHEMA = 3
 SPLITS = tuple(scenarios.SPLITS)

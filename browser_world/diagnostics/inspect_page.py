@@ -5,8 +5,8 @@ first page. Useful for checking the observer by eye.
 
 Usage:
 
-  python -m browser_world.inspect_page
-  python -m browser_world.inspect_page --url https://example.com --json
+  python -m browser_world.diagnostics.inspect_page
+  python -m browser_world.diagnostics.inspect_page --url https://example.com --json
 """
 
 from __future__ import annotations
@@ -19,9 +19,9 @@ import time
 from playwright import sync_api
 import uvicorn
 
-from browser_world import booking
-from browser_world import observer
-from browser_world import server
+from browser_world.environment import booking
+from browser_world.interaction import observer
+from browser_world.environment import server
 
 _LOCAL_PORT = 7899
 _START_TIMEOUT_S = 10

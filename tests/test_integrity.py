@@ -11,8 +11,8 @@
 
 import pytest
 
-from browser_world import executor
-from browser_world import recorder
+from browser_world.interaction import executor
+from browser_world.collection import recorder
 
 _FRESH_PAGE = """<!doctype html>
 <body style="margin:0;font:16px sans-serif">

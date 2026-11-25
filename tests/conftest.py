@@ -16,9 +16,9 @@ from playwright import sync_api
 import pytest
 import uvicorn
 
-from browser_world import booking
-from browser_world import observer
-from browser_world import server
+from browser_world.environment import booking
+from browser_world.interaction import observer
+from browser_world.environment import server
 
 _SERVER_START_TIMEOUT_S = 10
 TEST_URL = 'http://wam.test/'

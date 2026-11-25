@@ -10,9 +10,9 @@ checked with the observer. Page setup may use the existing helpers.
 
 import json
 
-from browser_world import booking
-from browser_world import executor
-from browser_world import observer
+from browser_world.environment import booking
+from browser_world.interaction import executor
+from browser_world.interaction import observer
 
 # A target button with a full-width hover band between it and the mouse's
 # starting corner, so every path to the button crosses the band. The

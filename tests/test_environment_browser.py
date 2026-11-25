@@ -7,7 +7,7 @@ and in backend ground truth.
 # Test functions need no docstrings, and pytest injects fixtures by name.
 # pylint: disable=missing-function-docstring,redefined-outer-name
 
-from browser_world import booking
+from browser_world.environment import booking
 
 _VALID = ('Sam Rivera', 'sam.rivera@example.com', '555-010-2030')
 

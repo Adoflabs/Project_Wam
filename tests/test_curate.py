@@ -12,13 +12,13 @@ import pytest
 
 import torch
 
-from browser_world import baselines
-from browser_world import collector
-from browser_world import curate
-from browser_world import executor
-from browser_world import observer
-from browser_world import recorder
-from browser_world import training_data
+from browser_world.experiments import baselines
+from browser_world.collection import collector
+from browser_world.dataset import curate
+from browser_world.interaction import executor
+from browser_world.interaction import observer
+from browser_world.collection import recorder
+from browser_world.dataset import training_data
 
 
 @pytest.fixture(scope='module')

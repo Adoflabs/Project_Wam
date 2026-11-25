@@ -9,12 +9,12 @@ import json
 import pytest
 from starlette import testclient
 
-from browser_world import booking
-from browser_world import executor
-from browser_world import recorder
-from browser_world import scenarios
-from browser_world import server
-from browser_world import goal_policy
+from browser_world.environment import booking
+from browser_world.interaction import executor
+from browser_world.collection import recorder
+from browser_world.environment import scenarios
+from browser_world.environment import server
+from browser_world.collection import goal_policy
 from tests import run_checks
 
 

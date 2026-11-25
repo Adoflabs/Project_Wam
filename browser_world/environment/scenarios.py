@@ -26,7 +26,7 @@ import dataclasses
 import datetime
 import random
 
-from browser_world import booking
+from browser_world.environment import booking
 
 SUCCESS = 'success'
 CONFLICT = 'conflict'

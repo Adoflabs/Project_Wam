@@ -6,8 +6,8 @@ import dataclasses
 import pytest
 from starlette import testclient
 
-from browser_world import booking
-from browser_world import server
+from browser_world.environment import booking
+from browser_world.environment import server
 
 _REQUEST = {
     'service': 'checkup',

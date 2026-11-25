@@ -3,8 +3,8 @@
 # Test functions need no docstrings, and pytest injects fixtures by name.
 # pylint: disable=missing-function-docstring,redefined-outer-name
 
-from browser_world import booking
-from browser_world import delta
+from browser_world.environment import booking
+from browser_world.diagnostics import delta
 
 
 def test_no_change_gives_empty_delta(world):

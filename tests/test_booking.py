@@ -5,7 +5,7 @@ import datetime
 
 import pytest
 
-from browser_world import booking
+from browser_world.environment import booking
 
 _VALID_DETAILS = {
     'name': 'Sam Rivera',

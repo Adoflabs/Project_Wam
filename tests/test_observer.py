@@ -5,7 +5,7 @@
 
 import json
 
-from browser_world import observer
+from browser_world.interaction import observer
 
 
 def test_semantic_plane(world):

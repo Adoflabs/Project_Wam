@@ -10,7 +10,7 @@ sees the page cannot see them either.
 
 Run directly:
 
-  python -m browser_world.server --port 7800
+  python -m browser_world.environment.server --port 7800
   # then open http://127.0.0.1:7800/?session=demo
 """
 
@@ -28,7 +28,7 @@ from starlette import responses
 from starlette import routing
 import uvicorn
 
-from browser_world import booking
+from browser_world.environment import booking
 
 SESSION_HEADER = 'X-WAM-Session'
 _STATIC_DIR = pathlib.Path(__file__).parent / 'static'

@@ -9,9 +9,9 @@ Outcomes are checked with the observer and, where relevant, the backend.
 
 import pytest
 
-from browser_world import executor
-from browser_world import observer
-from browser_world import recorder
+from browser_world.interaction import executor
+from browser_world.interaction import observer
+from browser_world.collection import recorder
 
 _GROUPED_PAGE = """<!doctype html>
 <body style="margin:0;font:16px sans-serif">

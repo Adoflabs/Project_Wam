@@ -43,7 +43,7 @@ from typing import Any
 
 from playwright import sync_api
 
-from browser_world import observer
+from browser_world.interaction import observer
 
 CLICK = 'click'
 TYPE = 'type'
