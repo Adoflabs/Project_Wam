@@ -14,7 +14,9 @@ import torch
 
 from browser_world.experiments import baselines
 from browser_world.collection import collector
+from browser_world.dataset import byte_encoding
 from browser_world.dataset import curate
+from browser_world.dataset import schema
 from browser_world.interaction import executor
 from browser_world.interaction import observer
 from browser_world.collection import recorder
@@ -230,11 +232,11 @@ def test_collate_pads_with_masks(curated_dir):
     b, k, n = batch['role'].shape
     assert (b, k) == (2, 3)
     assert batch['element_mask'].shape == (2, 3, n)
-    assert batch['name_chars'].shape == (2, 3, n, curate.MAX_CHARS)
+    assert batch['name_chars'].shape == (2, 3, n, schema.MAX_CHARS)
     padded = ~batch['element_mask']
     assert (batch['parent'][padded] == -1).all()
     assert not batch['t_known'][padded].any()
-    assert batch['t_outcomes'].shape == (2, 3, len(curate.OUTCOMES))
+    assert batch['t_outcomes'].shape == (2, 3, len(schema.OUTCOMES))
 
 
 def test_baselines_score_and_action_copy_beats_no_change(curated_dir):
@@ -247,34 +249,34 @@ def test_baselines_score_and_action_copy_beats_no_change(curated_dir):
 
 
 def _decode_bytes(ids):
-    return bytes(b - 1 for b in ids if b != curate.BYTE_PAD_ID).decode('utf-8')
+    return bytes(b - 1 for b in ids if b != byte_encoding.BYTE_PAD_ID).decode('utf-8')
 
 
 def test_encode_bytes_ascii_unicode_empty_null_and_long():
-    assert curate.encode_bytes('AB!') == [66, 67, 34]
-    assert curate.encode_bytes(None) == []
-    assert curate.encode_bytes('') == []
+    assert byte_encoding.encode_bytes('AB!') == [66, 67, 34]
+    assert byte_encoding.encode_bytes(None) == []
+    assert byte_encoding.encode_bytes('') == []
 
     null_text = 'a\x00b'
-    null_ids = curate.encode_bytes(null_text)
+    null_ids = byte_encoding.encode_bytes(null_text)
     assert null_ids == [98, 1, 99]
-    assert curate.BYTE_PAD_ID not in null_ids
+    assert byte_encoding.BYTE_PAD_ID not in null_ids
     assert _decode_bytes(null_ids + [0, 0]) == null_text
 
     for text in ('नमस्ते दुनिया', '₹1,250.50 €99 £10', '🚀✨🧪', 'हिंदी ₹100 🌍'):
-        ids = curate.encode_bytes(text)
+        ids = byte_encoding.encode_bytes(text)
         assert _decode_bytes(ids) == text
 
     over_32_chars = 'Appointment confirmed with Dr. Daniel Kim at 09:30'
     assert len(over_32_chars) > 32
-    assert _decode_bytes(curate.encode_bytes(over_32_chars)) == over_32_chars
+    assert _decode_bytes(byte_encoding.encode_bytes(over_32_chars)) == over_32_chars
 
     over_128_bytes = 'नमस्ते-' * 20
     assert len(over_128_bytes.encode('utf-8')) > 128
-    assert _decode_bytes(curate.encode_bytes(over_128_bytes)) == over_128_bytes
+    assert _decode_bytes(byte_encoding.encode_bytes(over_128_bytes)) == over_128_bytes
 
     with pytest.raises(UnicodeEncodeError):
-        curate.encode_bytes('\ud800')
+        byte_encoding.encode_bytes('\ud800')
 
 
 @pytest.fixture(scope='module')
@@ -410,8 +412,8 @@ def test_manifest_compatibility_legacy_and_bytes(raw_dir, tmp_path):
     assert 'source_commit' in legacy_m
     assert 'input_encoding' not in legacy_m
     assert bytes_m['input_encoding'] == 'utf8_bytes_v1'
-    assert bytes_m['byte_padding_id'] == curate.BYTE_PAD_ID
-    assert bytes_m['byte_vocab_size'] == curate.BYTE_VOCAB_SIZE
+    assert bytes_m['byte_padding_id'] == byte_encoding.BYTE_PAD_ID
+    assert bytes_m['byte_vocab_size'] == byte_encoding.BYTE_VOCAB_SIZE
     assert bytes_m['config']['byte_truncation'] is False
     assert 'vocab_sha256' in bytes_m
 
@@ -453,26 +455,26 @@ def test_bytes_collate_dynamic_padding_empty_and_mixed_rejection(
             assert not batch_k3['element_mask'][b_idx, k_idx, elem_count:].any()
             if elem_count < n3:
                 assert (batch_k3['name_bytes'][b_idx, k_idx, elem_count:]
-                        == curate.BYTE_PAD_ID).all()
+                        == byte_encoding.BYTE_PAD_ID).all()
                 assert (batch_k3['value_bytes'][b_idx, k_idx, elem_count:]
-                        == curate.BYTE_PAD_ID).all()
+                        == byte_encoding.BYTE_PAD_ID).all()
             for e_idx, elem in enumerate(elems):
                 nb = batch_k3['name_bytes'][b_idx, k_idx, e_idx].tolist()
                 n_len = len(elem['name_bytes'])
                 assert nb[:n_len] == elem['name_bytes']
-                assert all(x == curate.BYTE_PAD_ID for x in nb[n_len:])
+                assert all(x == byte_encoding.BYTE_PAD_ID for x in nb[n_len:])
                 assert _decode_bytes(nb) == _decode_bytes(elem['name_bytes'])
 
                 vb = batch_k3['value_bytes'][b_idx, k_idx, e_idx].tolist()
                 v_len = len(elem['value_bytes'])
                 assert vb[:v_len] == elem['value_bytes']
-                assert all(x == curate.BYTE_PAD_ID for x in vb[v_len:])
+                assert all(x == byte_encoding.BYTE_PAD_ID for x in vb[v_len:])
                 assert _decode_bytes(vb) == _decode_bytes(elem['value_bytes'])
 
             ab = batch_k3['action_text_bytes'][b_idx, k_idx].tolist()
             a_len = len(example['inputs']['action']['text_bytes'])
             assert ab[:a_len] == example['inputs']['action']['text_bytes']
-            assert all(x == curate.BYTE_PAD_ID for x in ab[a_len:])
+            assert all(x == byte_encoding.BYTE_PAD_ID for x in ab[a_len:])
             assert _decode_bytes(ab) == _decode_bytes(
                 example['inputs']['action']['text_bytes'])
 
@@ -512,9 +514,9 @@ def test_bytes_collate_dynamic_padding_empty_and_mixed_rejection(
     assert empty_batch['name_bytes'].shape == (1, 1, 1, 1)
     assert empty_batch['value_bytes'].shape == (1, 1, 1, 1)
     assert empty_batch['action_text_bytes'].shape == (1, 1, 1)
-    assert (empty_batch['name_bytes'] == curate.BYTE_PAD_ID).all()
-    assert (empty_batch['value_bytes'] == curate.BYTE_PAD_ID).all()
-    assert (empty_batch['action_text_bytes'] == curate.BYTE_PAD_ID).all()
+    assert (empty_batch['name_bytes'] == byte_encoding.BYTE_PAD_ID).all()
+    assert (empty_batch['value_bytes'] == byte_encoding.BYTE_PAD_ID).all()
+    assert (empty_batch['action_text_bytes'] == byte_encoding.BYTE_PAD_ID).all()
 
     # Partially byte-encoded records must be rejected explicitly.
     partial_missing_elem = json.loads(json.dumps(empty_example))

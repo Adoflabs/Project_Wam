@@ -19,21 +19,21 @@ import json
 import pathlib
 from typing import Any
 
-from browser_world.dataset import curate
+from browser_world.dataset import schema
 from browser_world.dataset import training_data
 
 Example = Mapping[str, Any]
 Prediction = dict[str, Any]
-_CHECKED = curate.STATE_NAMES.index('checked')
-_TYPED = curate.VALUE_SOURCES.index('typed')
-_OPTION = curate.VALUE_SOURCES.index('option')
+_CHECKED = schema.STATE_NAMES.index('checked')
+_TYPED = schema.VALUE_SOURCES.index('typed')
+_OPTION = schema.VALUE_SOURCES.index('option')
 
 
 def predict_no_change(example: Example) -> Prediction:
     """Predicts an unchanged page."""
     elements = example['inputs']['state']['elements']
-    outcomes = [0] * len(curate.OUTCOMES)
-    outcomes[curate.OUTCOMES.index('no_change')] = 1
+    outcomes = [0] * len(schema.OUTCOMES)
+    outcomes[schema.OUTCOMES.index('no_change')] = 1
     return {'changed': [0] * len(elements), 'removed': [0] * len(elements),
             'next_states': [list(e['states']) for e in elements],
             'value_source': [0] * len(elements),
@@ -55,7 +55,7 @@ def predict_action_copy(example: Example) -> Prediction:
     prediction = predict_no_change(example)
     elements = example['inputs']['state']['elements']
     action = example['inputs']['action']
-    kind = curate.ACTION_KINDS[action['kind']]
+    kind = schema.ACTION_KINDS[action['kind']]
     target = action['target']
     if kind == 'type':
         prediction['changed'][target] = 1
@@ -75,9 +75,9 @@ def predict_action_copy(example: Example) -> Prediction:
                 prediction['box_delta'][i] = [0.0, -action['scroll'], 0.0,
                                               0.0]
                 prediction['changed'][i] = 1
-        prediction['outcomes'][curate.OUTCOMES.index('scroll_changed')] = 1
+        prediction['outcomes'][schema.OUTCOMES.index('scroll_changed')] = 1
     if kind != 'click':
-        prediction['outcomes'][curate.OUTCOMES.index('no_change')] = 0
+        prediction['outcomes'][schema.OUTCOMES.index('no_change')] = 0
     return prediction
 
 
@@ -102,7 +102,7 @@ def evaluate(examples: Sequence[Example],
     values_right = values_total = 0
     box_error = box_total = 0.0
     new_error = 0.0
-    outcome_counts = {name: [0, 0, 0] for name in curate.OUTCOMES}
+    outcome_counts = {name: [0, 0, 0] for name in schema.OUTCOMES}
     for example in examples:
         prediction = predict(example)
         for i, target in enumerate(example['targets']['elements']):
@@ -130,7 +130,7 @@ def evaluate(examples: Sequence[Example],
                 box_total += 1
         new_error += abs(prediction['new_count']
                          - len(example['targets']['new']))
-        for name, truth, guess in zip(curate.OUTCOMES,
+        for name, truth, guess in zip(schema.OUTCOMES,
                                       example['targets']['outcomes'],
                                       prediction['outcomes']):
             counts = outcome_counts[name]

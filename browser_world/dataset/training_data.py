@@ -27,7 +27,8 @@ from typing import Any
 import torch
 from torch.utils import data as torch_data
 
-from browser_world.dataset import curate
+from browser_world.dataset import byte_encoding
+from browser_world.dataset import schema
 
 Example = Mapping[str, Any]
 
@@ -68,7 +69,7 @@ def _validate_byte_ids(ids: object) -> None:
             raise ValueError(
                 f'Byte ID must be an integer: {byte_id!r}'
             )
-        if not 1 <= byte_id < curate.BYTE_VOCAB_SIZE:
+        if not 1 <= byte_id < byte_encoding.BYTE_VOCAB_SIZE:
             raise ValueError(
                 f'Byte ID outside the valid range: {byte_id}'
             )
@@ -97,7 +98,7 @@ def _step_tensors(example: Example) -> dict[str, torch.Tensor]:
             return torch.zeros((0, 0), dtype=torch.long)
         max_len = max(len(row[key]) for row in elements)
         padded = [
-            row[key] + [curate.BYTE_PAD_ID] * (max_len - len(row[key]))
+            row[key] + [byte_encoding.BYTE_PAD_ID] * (max_len - len(row[key]))
             for row in elements
         ]
         return torch.tensor(padded, dtype=torch.long)
@@ -132,7 +133,7 @@ def _step_tensors(example: Example) -> dict[str, torch.Tensor]:
         't_box_mask': column(per, 'box_mask', torch.bool),
         't_outcomes': torch.tensor(targets['outcomes'], dtype=torch.float),
         't_new_role': new_column('role'),
-        't_new_words': new_column('name_words', curate.MAX_NAME_WORDS),
+        't_new_words': new_column('name_words', schema.MAX_NAME_WORDS),
         't_new_parent': new_column('parent_before'),
     }
     has_action_bytes = 'text_bytes' in action
@@ -226,11 +227,13 @@ def collate(batch: Sequence[Sequence[Mapping[str, torch.Tensor]]]
                 elif key in _NEW_KEYS:
                     value = _pad(value, m, _PAD_VALUES.get(key, 0))
                 elif key == 'name_bytes':
-                    value = _pad_2d(value, n, l_name, curate.BYTE_PAD_ID)
+                    value = _pad_2d(
+                        value, n, l_name, byte_encoding.BYTE_PAD_ID)
                 elif key == 'value_bytes':
-                    value = _pad_2d(value, n, l_value, curate.BYTE_PAD_ID)
+                    value = _pad_2d(
+                        value, n, l_value, byte_encoding.BYTE_PAD_ID)
                 elif key == 'action_text_bytes':
-                    value = _pad(value, l_action, curate.BYTE_PAD_ID)
+                    value = _pad(value, l_action, byte_encoding.BYTE_PAD_ID)
                 out[key].append(value)
             out['element_mask'].append(
                 torch.arange(n) < step['role'].shape[0])

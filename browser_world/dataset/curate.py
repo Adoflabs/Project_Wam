@@ -39,34 +39,21 @@ import subprocess
 from typing import Any
 
 from browser_world.interaction import observer
+from browser_world.dataset import byte_encoding
+from browser_world.dataset import schema
 from browser_world.collection import recorder
 from browser_world.environment import scenarios
 
 SUPPORTED_SCHEMA = 3
 SPLITS = tuple(scenarios.SPLITS)
-STATE_NAMES = observer.STATE_NAMES
-ACTION_KINDS = ('click', 'type', 'select', 'check', 'scroll')
-VALUE_SOURCES = ('unchanged', 'typed', 'option', 'cleared', 'other')
-OUTCOMES = ('no_change', 'alert_created', 'alert_resolved',
-            'alert_persisting', 'heading_changed', 'booking_created',
-            'race_lost', 'scroll_changed')
-MAX_NAME_WORDS = 8
-MAX_CHARS = 32
 BOX_TOLERANCE_PX = 1.0
-PAD, UNK = 0, 1
-BYTE_PAD_ID = 0
-BYTE_VOCAB_SIZE = 257
+schema.PAD, schema.UNK = 0, 1
+byte_encoding.BYTE_PAD_ID = 0
+byte_encoding.BYTE_VOCAB_SIZE = 257
 INPUT_ENCODINGS = ('legacy', 'utf8_bytes_v1')
 MANIFEST_STATUSES = frozenset({'complete', 'failed', 'timed_out', 'refused',
                                'abandoned'})
 _WORD_RE = re.compile(r'[a-z0-9]+')
-
-
-def encode_bytes(text: str | None) -> list[int]:
-    """Returns lossless UTF-8 byte IDs, reserving zero for padding."""
-    if text is None:
-        return []
-    return [byte + 1 for byte in text.encode('utf-8')]
 
 
 def _validate_input_encoding(input_encoding: str) -> None:
@@ -160,7 +147,7 @@ def _record_problems(record: Mapping[str, Any], split: str) -> list[str]:
                         f'match family {family}')
     action, target = record['action'], record['target']
     elements = record['before']['elements']
-    if action['kind'] not in ACTION_KINDS:
+    if action['kind'] not in schema.ACTION_KINDS:
         problems.append(f'unsupported action kind {action["kind"]}')
     if action['kind'] == 'scroll':
         if action['target'] is not None or target is not None:
@@ -405,8 +392,8 @@ class Vocab:
             self.tokens.append(token)
 
     def encode(self, token: str) -> int:
-        """Returns the token's id, or UNK."""
-        return self._index.get(token, UNK)
+        """Returns the token's id, or schema.UNK."""
+        return self._index.get(token, schema.UNK)
 
 
 def _position(positions: Mapping[int, int], node_id: int | None) -> int:
@@ -419,7 +406,7 @@ def _words(text: str) -> list[str]:
 
 
 def _fixed(ids: Sequence[int], length: int) -> list[int]:
-    return list(ids[:length]) + [PAD] * max(0, length - len(ids))
+    return list(ids[:length]) + [schema.PAD] * max(0, length - len(ids))
 
 
 @dataclasses.dataclass
@@ -446,12 +433,12 @@ class Vocabs:
     def text_chars(self, text: str | None) -> list[int]:
         """Returns fixed-length character ids for a string."""
         return _fixed([self.chars.encode(c) for c in (text or '')],
-                      MAX_CHARS)
+                      schema.MAX_CHARS)
 
     def name_words(self, text: str) -> list[int]:
         """Returns fixed-length word ids for a name."""
         return _fixed([self.words.encode(w) for w in _words(text)],
-                      MAX_NAME_WORDS)
+                      schema.MAX_NAME_WORDS)
 
 
 def _viewport_box(box: observer.Box | None,
@@ -485,7 +472,7 @@ def encode_state(observation: observer.Observation,
             'name_chars': vocabs.text_chars(element.name),
             'value_chars': vocabs.text_chars(element.value),
             'has_value': element.value is not None,
-            'states': [int(bool(element.states.get(s))) for s in STATE_NAMES],
+            'states': [int(bool(element.states.get(s))) for s in schema.STATE_NAMES],
             'flags': [int(element.visible), int(element.in_viewport),
                       int(element.obstructed), int(element.pinned)],
             'box': box or [0.0, 0.0, 0.0, 0.0],
@@ -493,8 +480,8 @@ def encode_state(observation: observer.Observation,
             'parent': _position(position, element.parent_id),
         }
         if input_encoding == 'utf8_bytes_v1':
-            entry['name_bytes'] = encode_bytes(element.name)
-            entry['value_bytes'] = encode_bytes(element.value)
+            entry['name_bytes'] = byte_encoding.encode_bytes(element.name)
+            entry['value_bytes'] = byte_encoding.encode_bytes(element.value)
         elements.append(entry)
     page = [motion.scroll_x / max(motion.content_width, 1.0),
             motion.scroll_y / max(motion.content_height, 1.0),
@@ -515,7 +502,7 @@ def encode_action(record: Mapping[str, Any], vocabs: Vocabs,
         'pointer_path'] else {'x': 0.0, 'y': 0.0}
     checked = action.get('checked')
     encoded: dict[str, Any] = {
-        'kind': ACTION_KINDS.index(action['kind']),
+        'kind': schema.ACTION_KINDS.index(action['kind']),
         'target': target['index'] if target else -1,
         'text_chars': vocabs.text_chars(action.get('text')),
         'checked': 0 if checked is None else 1 + int(checked),
@@ -524,7 +511,7 @@ def encode_action(record: Mapping[str, Any], vocabs: Vocabs,
                     start['y'] / motion.viewport_height],
     }
     if input_encoding == 'utf8_bytes_v1':
-        encoded['text_bytes'] = encode_bytes(action.get('text'))
+        encoded['text_bytes'] = byte_encoding.encode_bytes(action.get('text'))
     return encoded
 
 
@@ -542,16 +529,16 @@ def _value_source(record: Mapping[str, Any], before: observer.Element,
                   dropdown: int) -> int:
     action, target = record['action'], record['target']
     if after.value == before.value:
-        return VALUE_SOURCES.index('unchanged')
+        return schema.VALUE_SOURCES.index('unchanged')
     if (action['kind'] == 'type' and target and target['index'] == index
             and after.value == action['text']):
-        return VALUE_SOURCES.index('typed')
+        return schema.VALUE_SOURCES.index('typed')
     if (action['kind'] == 'select' and index == dropdown
             and after.value == target['name']):
-        return VALUE_SOURCES.index('option')
+        return schema.VALUE_SOURCES.index('option')
     if after.value == '':
-        return VALUE_SOURCES.index('cleared')
-    return VALUE_SOURCES.index('other')
+        return schema.VALUE_SOURCES.index('cleared')
+    return schema.VALUE_SOURCES.index('other')
 
 
 def _element_changed(before: observer.Element, after: observer.Element) -> bool:
@@ -580,14 +567,14 @@ def encode_targets(record: Mapping[str, Any], vocabs: Vocabs,
         known = i not in alignment.ambiguous_before
         entry = {'known': known, 'removed': known and j < 0,
                  'changed': known and j < 0, 'matched': j >= 0,
-                 'next_states': [0] * len(STATE_NAMES),
+                 'next_states': [0] * len(schema.STATE_NAMES),
                  'value_source': 0, 'value_mask': False,
                  'box_delta': [0.0] * 4, 'box_mask': False}
         if j >= 0:
             other = after.elements[j]
             entry['changed'] = _element_changed(element, other)
             entry['next_states'] = [int(bool(other.states.get(s)))
-                                    for s in STATE_NAMES]
+                                    for s in schema.STATE_NAMES]
             if element.value is not None or other.value is not None:
                 entry['value_source'] = _value_source(record, element, other,
                                                       i, dropdown)
@@ -645,7 +632,7 @@ def _outcomes(record: Mapping[str, Any], alignment: Alignment,
               'alert_resolved': resolved, 'alert_persisting': persisting,
               'heading_changed': headings, 'booking_created': booked,
               'race_lost': race, 'scroll_changed': scrolled}
-    return [int(values[name]) for name in OUTCOMES]
+    return [int(values[name]) for name in schema.OUTCOMES]
 
 
 def curate_record(record: Mapping[str, Any],
@@ -689,7 +676,7 @@ def label_coverage(examples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     for example in examples:
         actions[example['meta']['action_kind']] += 1
         new += len(example['targets']['new'])
-        for name, value in zip(OUTCOMES, example['targets']['outcomes']):
+        for name, value in zip(schema.OUTCOMES, example['targets']['outcomes']):
             outcomes[name] += value
         for target in example['targets']['elements']:
             elements += 1
@@ -699,7 +686,7 @@ def label_coverage(examples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             changed += target['changed']
             removed += target['removed']
             if target['value_mask']:
-                value_sources[VALUE_SOURCES[target['value_source']]] += 1
+                value_sources[schema.VALUE_SOURCES[target['value_source']]] += 1
     return {'examples': len(examples), 'actions': dict(actions),
             'elements': elements, 'changed_elements': changed,
             'removed_elements': removed, 'new_elements': new,
@@ -821,12 +808,12 @@ def curate(raw_dir: pathlib.Path, out_dir: pathlib.Path,
         for p in sorted(raw_dir.rglob('*.json*'))
     }
     config: dict[str, Any] = {
-        'state_names': list(STATE_NAMES),
-        'action_kinds': list(ACTION_KINDS),
-        'value_sources': list(VALUE_SOURCES),
-        'outcomes': list(OUTCOMES),
-        'max_name_words': MAX_NAME_WORDS,
-        'max_chars': MAX_CHARS,
+        'state_names': list(schema.STATE_NAMES),
+        'action_kinds': list(schema.ACTION_KINDS),
+        'value_sources': list(schema.VALUE_SOURCES),
+        'outcomes': list(schema.OUTCOMES),
+        'max_name_words': schema.MAX_NAME_WORDS,
+        'max_chars': schema.MAX_CHARS,
         'box_tolerance_px': BOX_TOLERANCE_PX,
         'vocab_fitted_on': 'train only',
     }
@@ -847,14 +834,14 @@ def curate(raw_dir: pathlib.Path, out_dir: pathlib.Path,
     if input_encoding == 'utf8_bytes_v1':
         config.update({
             'input_encoding': input_encoding,
-            'byte_padding_id': BYTE_PAD_ID,
-            'byte_vocab_size': BYTE_VOCAB_SIZE,
+            'byte_padding_id': byte_encoding.BYTE_PAD_ID,
+            'byte_vocab_size': byte_encoding.BYTE_VOCAB_SIZE,
             'byte_truncation': False,
         })
         manifest.update({
             'input_encoding': input_encoding,
-            'byte_padding_id': BYTE_PAD_ID,
-            'byte_vocab_size': BYTE_VOCAB_SIZE,
+            'byte_padding_id': byte_encoding.BYTE_PAD_ID,
+            'byte_vocab_size': byte_encoding.BYTE_VOCAB_SIZE,
             'curation_commit': _source_commit(),
             'curation_dirty': _working_tree_dirty(),
             'source_dataset': {
